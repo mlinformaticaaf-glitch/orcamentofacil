@@ -1,0 +1,10 @@
+project_id = "btfkbpbdgbmzhywaofrw"
+
+[functions.parse-voice]
+verify_jwt = false
+
+[functions.parse-statement]
+verify_jwt = false
+
+[functions.categorize-transactions]
+verify_jwt = false
