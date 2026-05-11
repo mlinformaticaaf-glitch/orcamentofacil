@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { TabType } from '@/types/budget';
 import { useBudgetStore } from '@/hooks/useBudgetStore';
 import { SummaryCards } from '@/components/SummaryCards';
@@ -31,12 +32,31 @@ const secondaryTabs: { id: TabType; label: string; icon: React.ElementType }[] =
 ];
 
 const Index = () => {
-  const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<TabType>((searchParams.get('tab') as TabType) || 'dashboard');
   const [activeNavPage, setActiveNavPage] = useState(0);
-  const [expenseFormOpen, setExpenseFormOpen] = useState(false);
-  const [incomeFormOpen, setIncomeFormOpen] = useState(false);
+  const [expenseFormOpen, setExpenseFormOpen] = useState(searchParams.get('open') === 'true' && searchParams.get('tab') === 'expenses');
+  const [incomeFormOpen, setIncomeFormOpen] = useState(searchParams.get('open') === 'true' && searchParams.get('tab') === 'incomes');
   const [dashboardMonth, setDashboardMonth] = useState(new Date());
   const store = useBudgetStore();
+
+  useEffect(() => {
+    const tab = searchParams.get('tab') as TabType;
+    if (tab && tab !== activeTab) {
+      setActiveTab(tab);
+    }
+    if (searchParams.get('open') === 'true') {
+      if (tab === 'expenses') setExpenseFormOpen(true);
+      if (tab === 'incomes') setIncomeFormOpen(true);
+      // Clear the 'open' param to avoid re-opening on reload if needed, 
+      // but usually for shortcuts it's fine.
+    }
+  }, [searchParams]);
+
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab);
+    setSearchParams({ tab });
+  };
 
   const prevMonth = useCallback(() => setDashboardMonth(m => subMonths(m, 1)), []);
   const nextMonth = useCallback(() => setDashboardMonth(m => addMonths(m, 1)), []);
@@ -65,7 +85,7 @@ const Index = () => {
               {[...mainTabs, ...secondaryTabs].map(tab => (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleTabChange(tab.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap flex-shrink-0 ${
                     activeTab === tab.id
                       ? 'bg-primary text-primary-foreground shadow-sm'
@@ -142,54 +162,23 @@ const Index = () => {
         />
       )}
 
-      {/* Mobile bottom nav */}
       <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-20 safe-bottom px-3 pb-2">
         <div className="relative">
-          {/* Pagination dots */}
-          <div className="absolute -top-3 left-0 right-0 flex justify-center gap-1.5 z-10">
-            <div className={`w-1.5 h-1.5 rounded-full transition-colors ${activeNavPage === 0 ? 'bg-primary' : 'bg-foreground/20'}`}></div>
-            <div className={`w-1.5 h-1.5 rounded-full transition-colors ${activeNavPage === 1 ? 'bg-primary' : 'bg-foreground/20'}`}></div>
-          </div>
-          
           <div 
-            className="flex overflow-x-auto snap-x snap-mandatory [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] py-2 bg-card/90 backdrop-blur-xl border border-border rounded-[2rem] shadow-sm relative z-10"
-            onScroll={(e) => {
-              const scrollLeft = e.currentTarget.scrollLeft;
-              const width = e.currentTarget.clientWidth;
-              setActiveNavPage(Math.round(scrollLeft / width));
-            }}
+            className="flex overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] py-2 bg-card/90 backdrop-blur-xl border border-border rounded-[2rem] shadow-sm relative z-10 px-2 gap-1"
           >
-            {/* Page 1 */}
-            <div className="w-full flex-shrink-0 flex justify-around snap-center px-1">
-              {mainTabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-full text-xs font-medium transition-all min-w-0 ${
-                    activeTab === tab.id ? 'text-primary' : 'text-muted-foreground'
-                  }`}
-                >
-                  <tab.icon className="w-5 h-5" />
-                  <span className="truncate text-[10px]">{tab.label}</span>
-                </button>
-              ))}
-            </div>
-
-            {/* Page 2 */}
-            <div className="w-full flex-shrink-0 flex justify-around snap-center px-1">
-              {secondaryTabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-full text-xs font-medium transition-all min-w-0 ${
-                    activeTab === tab.id ? 'text-primary' : 'text-muted-foreground'
-                  }`}
-                >
-                  <tab.icon className="w-5 h-5" />
-                  <span className="truncate text-[10px]">{tab.label}</span>
-                </button>
-              ))}
-            </div>
+            {[...mainTabs, ...secondaryTabs].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => handleTabChange(tab.id)}
+                className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all min-w-[64px] flex-shrink-0 ${
+                  activeTab === tab.id ? 'text-primary bg-primary/10' : 'text-muted-foreground'
+                }`}
+              >
+                <tab.icon className="w-5 h-5" />
+                <span className="truncate text-[10px]">{tab.label}</span>
+              </button>
+            ))}
           </div>
         </div>
       </nav>

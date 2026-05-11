@@ -30,9 +30,36 @@ export default defineConfig(({ mode }) => ({
         theme_color: "#0f1319",
         background_color: "#0f1319",
         display: "standalone",
-        orientation: "portrait",
+        display_override: ["fullscreen", "minimal-ui"],
+        orientation: "any",
         scope: "/",
         start_url: "/",
+        shortcuts: [
+          {
+            name: "Lançar Despesa",
+            short_name: "Despesa",
+            url: "/?tab=expenses&open=true",
+            icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+          },
+          {
+            name: "Lançar Receita",
+            short_name: "Receita",
+            url: "/?tab=incomes&open=true",
+            icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+          },
+          {
+            name: "Categorias",
+            short_name: "Categorias",
+            url: "/?tab=categories",
+            icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+          },
+          {
+            name: "Configurações",
+            short_name: "Ajustes",
+            url: "/?tab=settings",
+            icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+          }
+        ],
         icons: [
           {
             src: "/pwa-192x192.png",
