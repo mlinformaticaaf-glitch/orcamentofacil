@@ -1,4 +1,4 @@
-project_id = "btfkbpbdgbmzhywaofrw"
+project_id = "mgeoubxuslbtpvfvlivp"
 
 [functions.parse-voice]
 verify_jwt = false
