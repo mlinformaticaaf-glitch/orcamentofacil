@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import { Category, Expense, Income } from '@/types/budget';
-import { format } from 'date-fns';
+import { format, parseISO, addMonths } from 'date-fns';
 
 export interface ParsedTransaction {
   type: 'expense' | 'income';
@@ -10,6 +10,8 @@ export interface ParsedTransaction {
   amount: number;
   categoryId?: string;
   categoryName?: string;
+  date?: string;
+  installments?: number;
 }
 
 interface UseVoiceInputProps {
@@ -91,7 +93,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
       const { data, error } = await supabase.functions.invoke('parse-voice', {
         body: {
           text: inputText,
-          categories: categories.map(c => ({ id: c.id, name: c.name })),
+          categories: categories.map(c => ({ id: c.id, name: c.name, type: c.type })),
         },
       });
 
@@ -119,22 +121,44 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
     let added = 0;
 
     parsedTransactions.forEach(t => {
+      const transDate = t.date || today;
       if (t.type === 'expense' && t.categoryId && onAddExpense) {
-        onAddExpense({
-          categoryId: t.categoryId,
-          description: t.description,
-          amount: t.amount,
-          date: today,
-          isFixed: false,
-          status: 'pending',
-        });
-        added++;
+        if (t.installments && t.installments > 1) {
+          const numInstallments = t.installments;
+          const installmentAmount = t.amount / numInstallments;
+          const baseDate = parseISO(transDate);
+
+          for (let i = 0; i < numInstallments; i++) {
+            const expDate = addMonths(baseDate, i);
+            onAddExpense({
+              categoryId: t.categoryId,
+              description: `${t.description} (${i + 1}/${numInstallments})`,
+              amount: Math.round(installmentAmount * 100) / 100,
+              date: format(expDate, 'yyyy-MM-dd'),
+              isFixed: false,
+              status: 'pending',
+              installments: numInstallments,
+              currentInstallment: i + 1,
+            });
+            added++;
+          }
+        } else {
+          onAddExpense({
+            categoryId: t.categoryId,
+            description: t.description,
+            amount: t.amount,
+            date: transDate,
+            isFixed: false,
+            status: 'pending',
+          });
+          added++;
+        }
       } else if (t.type === 'income' && onAddIncome) {
         onAddIncome({
           categoryId: t.categoryId,
           description: t.description,
           amount: t.amount,
-          date: today,
+          date: transDate,
           isRecurring: false,
           status: 'pending',
         });
