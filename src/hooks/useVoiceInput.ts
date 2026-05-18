@@ -160,7 +160,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
               amount: Math.round(installmentAmount * 100) / 100,
               date: format(expDate, 'yyyy-MM-dd'),
               isFixed: false,
-              status: 'pending',
+              status: 'paid',
               installments: numInstallments,
               currentInstallment: i + 1,
             });
@@ -173,7 +173,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
             amount: t.amount,
             date: transDate,
             isFixed: false,
-            status: 'pending',
+            status: 'paid',
           });
           added++;
         }
@@ -184,7 +184,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
           amount: t.amount,
           date: transDate,
           isRecurring: false,
-          status: 'pending',
+          status: 'received',
         });
         added++;
       }
