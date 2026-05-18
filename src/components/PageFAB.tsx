@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Plus, Mic, MicOff, Loader2, Check, Receipt, DollarSign } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Category, Expense, Income } from '@/types/budget';
 import { useVoiceInput } from '@/hooks/useVoiceInput';
@@ -32,6 +33,7 @@ export function PageFAB({
   showVoice = true,
 }: PageFABProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [confirmAddMoreOpen, setConfirmAddMoreOpen] = useState(false);
   const hasVoice = showVoice && categories.length > 0 && (onAddExpense || onAddIncome);
 
   const {
@@ -160,7 +162,13 @@ export function PageFAB({
                     </p>
                   </div>
                 ))}
-                <Button onClick={confirmTransactions} className="w-full gap-2">
+                <Button onClick={() => {
+                  const success = confirmTransactions();
+                  if (success) {
+                    setIsVoiceOpen(false);
+                    setConfirmAddMoreOpen(true);
+                  }
+                }} className="w-full gap-2">
                   <Check className="w-4 h-4" /> Confirmar e Registrar
                 </Button>
               </div>
@@ -168,6 +176,27 @@ export function PageFAB({
           </div>
         </DialogContent>
       </Dialog>
+      {/* Add more confirmation */}
+      <AlertDialog open={confirmAddMoreOpen} onOpenChange={setConfirmAddMoreOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Registrado com sucesso!</AlertDialogTitle>
+            <AlertDialogDescription>
+              Deseja adicionar mais algum lançamento por voz?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setConfirmAddMoreOpen(false)}>Não</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              setConfirmAddMoreOpen(false);
+              setIsVoiceOpen(true);
+              setTimeout(startListening, 50);
+            }}>
+              Sim, adicionar outro
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

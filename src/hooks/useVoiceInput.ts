@@ -195,7 +195,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
     }
     setParsedTransactions([]);
     setTranscript('');
-    setIsVoiceOpen(false);
+    return added > 0;
   }, [parsedTransactions, onAddExpense, onAddIncome]);
 
   const resetVoiceState = useCallback(() => {
