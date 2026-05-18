@@ -48,12 +48,13 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
   const [isFixed, setIsFixed] = useState(false);
   const [creditCardId, setCreditCardId] = useState('none');
   const [installments, setInstallments] = useState('1');
-  const [status, setStatus] = useState<ExpenseStatus>('pending');
+  const [status, setStatus] = useState<ExpenseStatus>('paid');
   const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'pending'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [accountId, setAccountId] = useState<string>('none');
+  const [confirmAddMoreOpen, setConfirmAddMoreOpen] = useState(false);
 
   // Delete installment confirmation
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -79,6 +80,7 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
       setDeleteConfirmOpen(true);
     } else {
       onDelete(exp.id);
+      setOpen(false);
     }
   };
 
@@ -93,6 +95,7 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
     }
     setDeleteConfirmOpen(false);
     setDeleteTarget(null);
+    setOpen(false);
   };
 
   const handleOpenEdit = (exp: Expense) => {
@@ -118,7 +121,7 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
     setIsFixed(false);
     setCreditCardId('none');
     setInstallments('1');
-    setStatus('pending');
+    setStatus('paid');
     setAccountId('none');
     setOpen(true);
   };
@@ -140,6 +143,16 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
         status,
         accountId: accountId !== 'none' ? accountId : undefined,
       });
+      setOpen(false);
+      setEditing(null);
+      setDescription('');
+      setAmount('');
+      setCategoryId('');
+      setIsFixed(false);
+      setCreditCardId('none');
+      setInstallments('1');
+      setStatus('paid');
+      setAccountId('none');
     } else {
       const numInstallments = Math.max(1, Number(installments));
       const installmentAmount = Number(amount) / numInstallments;
@@ -160,18 +173,34 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
           accountId: accountId !== 'none' ? accountId : undefined,
         });
       }
+      setConfirmAddMoreOpen(true);
     }
+  };
 
-    setOpen(false);
-    setEditing(null);
-    setDescription('');
-    setAmount('');
-    setCategoryId('');
-    setIsFixed(false);
-    setCreditCardId('none');
-    setInstallments('1');
-    setStatus('pending');
-    setAccountId('none');
+  const handleConfirmAddMore = (addMore: boolean) => {
+    setConfirmAddMoreOpen(false);
+    if (addMore) {
+      setDescription('');
+      setAmount('');
+      setCategoryId('');
+      setIsFixed(false);
+      setCreditCardId('none');
+      setInstallments('1');
+      setStatus('paid');
+      setAccountId('none');
+      setDate(new Date());
+    } else {
+      setOpen(false);
+      setDescription('');
+      setAmount('');
+      setCategoryId('');
+      setIsFixed(false);
+      setCreditCardId('none');
+      setInstallments('1');
+      setStatus('paid');
+      setAccountId('none');
+      setDate(new Date());
+    }
   };
 
   const monthStart = startOfMonth(selectedMonth);
@@ -228,7 +257,7 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
           <span className="text-sm text-muted-foreground hidden sm:inline">Total: {formatCurrency(monthTotal)}</span>
         </div>
         <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setEditing(null); }}>
-          <DialogContent>
+          <DialogContent onOpenAutoFocus={(e) => e.preventDefault()}>
             <DialogHeader>
               <DialogTitle className="font-display">{editing ? 'Editar' : 'Nova'} Despesa</DialogTitle>
             </DialogHeader>
@@ -320,7 +349,14 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
                   </Select>
                 </div>
               )}
-              <Button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="w-full">Salvar</Button>
+              <div className="flex gap-2 pt-2">
+                {editing && (
+                  <Button variant="destructive" onClick={(e) => { e.stopPropagation(); handleDeleteExpense(editing); }} className="px-3 shrink-0">
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                )}
+                <Button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="flex-1">Salvar</Button>
+              </div>
             </div>
           </DialogContent>
         </Dialog>
@@ -435,9 +471,6 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
                           <p className="text-xs text-muted-foreground">{cat?.name} · {format(parseISO(exp.date), 'dd/MM')}</p>
                         </div>
                         <p className="font-medium shrink-0 text-sm">{formatCurrency(exp.amount)}</p>
-                        <Button size="icon" variant="ghost" className="h-7 w-7 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-destructive shrink-0" onClick={(e) => { e.stopPropagation(); handleDeleteExpense(exp); }}>
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
                       </Card>
                     );
                   })}
@@ -469,9 +502,6 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
                 </p>
               </div>
               <p className="font-semibold shrink-0">{formatCurrency(exp.amount)}</p>
-              <Button size="icon" variant="ghost" className="h-8 w-8 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-destructive shrink-0" onClick={(e) => { e.stopPropagation(); handleDeleteExpense(exp); }}>
-                <Trash2 className="w-3.5 h-3.5" />
-              </Button>
             </Card>
           );
         })}
@@ -498,6 +528,24 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
             </AlertDialogAction>
             <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => handleDeleteConfirm(true)}>
               Todas as parcelas
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Add more confirmation */}
+      <AlertDialog open={confirmAddMoreOpen} onOpenChange={setConfirmAddMoreOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Despesa registrada!</AlertDialogTitle>
+            <AlertDialogDescription>
+              A despesa foi salva com sucesso. Deseja registrar mais alguma?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => handleConfirmAddMore(false)}>Não</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleConfirmAddMore(true)}>
+              Sim, adicionar outra
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

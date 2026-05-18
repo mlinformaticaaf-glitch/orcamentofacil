@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Receipt, DollarSign, Mic, X, MicOff, Loader2, Check } from 'lucide-react';
+import { Plus, Receipt, DollarSign, Mic, MicOff, Loader2, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Category, Expense, Income } from '@/types/budget';
@@ -15,16 +15,18 @@ interface Props {
 
 export function FloatingActionButton({ categories, onAddExpense, onAddIncome, onOpenExpenseForm, onOpenIncomeForm }: Props) {
   const [isOpen, setIsOpen] = useState(false);
-  
+
   const {
     isVoiceOpen,
     setIsVoiceOpen,
     isListening,
     isProcessing,
     transcript,
+    setTranscript,
     parsedTransactions,
     startListening,
     stopListening,
+    processWithAI,
     confirmTransactions,
     resetVoiceState,
   } = useVoiceInput({ categories, onAddExpense, onAddIncome });
@@ -76,21 +78,28 @@ export function FloatingActionButton({ categories, onAddExpense, onAddIncome, on
               <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
                 <Mic className="w-5 h-5 text-accent" />
               </div>
-              <span>Registro por Voz</span>
+              <span>Registro por Voz / IA</span>
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Voice dialog */}
-      <Dialog open={isVoiceOpen} onOpenChange={(open) => { if (!open) resetVoiceState(); setIsVoiceOpen(open); }}>
+      {/* Voice + AI dialog */}
+      <Dialog
+        open={isVoiceOpen}
+        onOpenChange={(open) => {
+          if (!open) { resetVoiceState(); }
+          setIsVoiceOpen(open);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="font-display">Registro por Voz</DialogTitle>
+            <DialogTitle className="font-display">Registro por Voz / IA</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-2">
             <p className="text-sm text-muted-foreground">
-              Diga o que gastou ou recebeu. Exemplo: <em>"Gastei 50 reais no supermercado e 30 no uber"</em>
+              Fale ou digite o que gastou ou recebeu. Exemplo:{' '}
+              <em>"Gastei 50 reais no supermercado e 30 no uber"</em>
             </p>
 
             {/* Mic button */}
@@ -120,7 +129,7 @@ export function FloatingActionButton({ categories, onAddExpense, onAddIncome, on
               </div>
             )}
 
-            {/* Process button */}
+            {/* Processing indicator */}
             {isProcessing && (
               <div className="flex items-center justify-center gap-2 py-2">
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -135,7 +144,9 @@ export function FloatingActionButton({ categories, onAddExpense, onAddIncome, on
                 {parsedTransactions.map((t, i) => (
                   <div key={i} className="flex items-center gap-3 bg-muted rounded-xl p-3">
                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${t.type === 'income' ? 'bg-success/10' : 'bg-destructive/10'}`}>
-                      {t.type === 'income' ? <DollarSign className="w-4 h-4 text-success" /> : <Receipt className="w-4 h-4 text-destructive" />}
+                      {t.type === 'income'
+                        ? <DollarSign className="w-4 h-4 text-success" />
+                        : <Receipt className="w-4 h-4 text-destructive" />}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">{t.description}</p>

@@ -29,6 +29,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
   
   const recognitionRef = useRef<any>(null);
   const processWithAIRef = useRef<(text: string) => void>();
+  const transcriptRef = useRef('');
 
   const startListening = useCallback(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -54,7 +55,9 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
           interim += event.results[i][0].transcript;
         }
       }
-      setTranscript(finalTranscript + interim);
+      const currentText = finalTranscript + interim;
+      setTranscript(currentText);
+      transcriptRef.current = currentText;
     };
 
     recognition.onerror = (event: any) => {
@@ -64,7 +67,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
 
     recognition.onend = () => {
       setIsListening(false);
-      const text = finalTranscript.trim();
+      const text = transcriptRef.current.trim();
       if (text) {
         processWithAIRef.current?.(text);
       }
@@ -74,6 +77,7 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
     recognition.start();
     setIsListening(true);
     setTranscript('');
+    transcriptRef.current = '';
     setParsedTransactions([]);
   }, []);
 
@@ -97,16 +101,36 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
         },
       });
 
-      if (error) throw error;
+      if (error) {
+        // In Supabase JS v2, when a function returns a non-2xx status,
+        // data is null and error.context is the raw Response object.
+        // We must call error.context.json() to get the actual body.
+        let apiError = 'Falha ao processar com IA';
+        try {
+          const errBody = await (error as any).context?.json?.();
+          if (errBody?.error && typeof errBody.error === 'string') {
+            apiError = errBody.error;
+          } else if (error?.message) {
+            apiError = error.message;
+          }
+        } catch {
+          apiError = error?.message || 'Falha ao processar com IA';
+        }
+        throw new Error(apiError);
+      }
 
       if (data?.transactions && data.transactions.length > 0) {
         setParsedTransactions(data.transactions);
       } else {
         toast({ title: 'Hmm...', description: 'Não consegui identificar nenhum registro. Tente novamente.', variant: 'destructive' });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('AI processing error:', err);
-      toast({ title: 'Erro', description: 'Falha ao processar com IA. Tente novamente.', variant: 'destructive' });
+      const apiMessage = err?.message || err?.error || null;
+      const description = apiMessage && typeof apiMessage === 'string' && apiMessage.length < 200
+        ? apiMessage
+        : 'Falha ao processar com IA. Verifique sua conexão e tente novamente.';
+      toast({ title: 'Erro ao processar com IA', description, variant: 'destructive' });
     } finally {
       setIsProcessing(false);
     }
@@ -186,9 +210,11 @@ export function useVoiceInput({ categories, onAddExpense, onAddIncome }: UseVoic
     isListening,
     isProcessing,
     transcript,
+    setTranscript,
     parsedTransactions,
     startListening,
     stopListening,
+    processWithAI,
     confirmTransactions,
     resetVoiceState,
   };

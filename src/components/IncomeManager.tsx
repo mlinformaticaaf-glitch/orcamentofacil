@@ -44,7 +44,7 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState<Date>(new Date());
   const [isRecurring, setIsRecurring] = useState(false);
-  const [status, setStatus] = useState<IncomeStatus>('pending');
+  const [status, setStatus] = useState<IncomeStatus>('received');
   const [categoryId, setCategoryId] = useState<string>('');
   const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [searchTerm, setSearchTerm] = useState('');
@@ -52,6 +52,7 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [accountId, setAccountId] = useState<string>('');
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [confirmAddMoreOpen, setConfirmAddMoreOpen] = useState(false);
 
   const incomeCategories = categories.filter(c => c.type === 'income');
 
@@ -73,7 +74,7 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
     setAmount('');
     setDate(new Date());
     setIsRecurring(false);
-    setStatus('pending');
+    setStatus('received');
     setCategoryId('');
     setAccountId('');
     setOpen(true);
@@ -92,6 +93,14 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
         categoryId: categoryId && categoryId !== 'none' ? categoryId : undefined,
         accountId: accountId && accountId !== 'none' ? accountId : undefined,
       });
+      setOpen(false);
+      setEditing(null);
+      setDescription('');
+      setAmount('');
+      setIsRecurring(false);
+      setStatus('received');
+      setCategoryId('');
+      setAccountId('');
     } else {
       onAdd({
         description,
@@ -102,15 +111,30 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
         categoryId: categoryId && categoryId !== 'none' ? categoryId : undefined,
         accountId: accountId && accountId !== 'none' ? accountId : undefined,
       });
+      setConfirmAddMoreOpen(true);
     }
-    setOpen(false);
-    setEditing(null);
-    setDescription('');
-    setAmount('');
-    setIsRecurring(false);
-    setStatus('pending');
-    setCategoryId('');
-    setAccountId('');
+  };
+
+  const handleConfirmAddMore = (addMore: boolean) => {
+    setConfirmAddMoreOpen(false);
+    if (addMore) {
+      setDescription('');
+      setAmount('');
+      setDate(new Date());
+      setIsRecurring(false);
+      setStatus('received');
+      setCategoryId('');
+      setAccountId('');
+    } else {
+      setOpen(false);
+      setDescription('');
+      setAmount('');
+      setDate(new Date());
+      setIsRecurring(false);
+      setStatus('received');
+      setCategoryId('');
+      setAccountId('');
+    }
   };
 
   const monthStart = startOfMonth(selectedMonth);
@@ -148,7 +172,7 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
           <span className="text-sm text-muted-foreground hidden sm:inline">Total: {formatCurrency(monthTotal)}</span>
         </div>
         <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setEditing(null); }}>
-          <DialogContent>
+          <DialogContent onOpenAutoFocus={(e) => e.preventDefault()}>
             <DialogHeader>
               <DialogTitle className="font-display">{editing ? 'Editar' : 'Nova'} Receita</DialogTitle>
             </DialogHeader>
@@ -225,7 +249,14 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
                   </Select>
                 </div>
               )}
-              <Button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="w-full">Salvar</Button>
+              <div className="flex gap-2 pt-2">
+                {editing && (
+                  <Button variant="destructive" onClick={(e) => { e.stopPropagation(); setDeleteTargetId(editing.id); }} className="px-3 shrink-0">
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                )}
+                <Button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="flex-1">Salvar</Button>
+              </div>
             </div>
           </DialogContent>
         </Dialog>
@@ -290,9 +321,6 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
               </p>
             </div>
             <p className="font-semibold shrink-0 text-success">{formatCurrency(inc.amount)}</p>
-            <Button size="icon" variant="ghost" className="h-8 w-8 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-destructive shrink-0" onClick={(e) => { e.stopPropagation(); setDeleteTargetId(inc.id); }}>
-              <Trash2 className="w-3.5 h-3.5" />
-            </Button>
           </Card>
         ))}
       </div>
@@ -308,8 +336,26 @@ export function IncomeManager({ incomes, categories, accounts = [], onAdd, onUpd
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteTargetId) { onDelete(deleteTargetId); setDeleteTargetId(null); } }}>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteTargetId) { onDelete(deleteTargetId); setDeleteTargetId(null); setOpen(false); } }}>
               Excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Add more confirmation */}
+      <AlertDialog open={confirmAddMoreOpen} onOpenChange={setConfirmAddMoreOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Receita registrada!</AlertDialogTitle>
+            <AlertDialogDescription>
+              A receita foi salva com sucesso. Deseja registrar mais alguma?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => handleConfirmAddMore(false)}>Não</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleConfirmAddMore(true)}>
+              Sim, adicionar outra
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
