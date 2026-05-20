@@ -239,7 +239,7 @@ export function ExpenseManager({ expenses, categories, creditCards, accounts = [
   const swipeHandlers = useSwipe({ onSwipeLeft: nextMonth, onSwipeRight: prevMonth });
 
   return (
-    <div className="space-y-4 flex-1" style={{ minHeight: 'calc(100vh - 10rem)' }} {...swipeHandlers}>
+    <div className="space-y-4" {...swipeHandlers}>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <h2 className="text-xl font-display font-bold">Despesas</h2>

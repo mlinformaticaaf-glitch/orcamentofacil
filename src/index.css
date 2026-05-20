@@ -164,6 +164,13 @@
     @apply border-border;
   }
 
+  html {
+    scroll-behavior: smooth;
+    overflow-y: overlay;
+    scrollbar-gutter: stable both-edges;
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
     @apply text-foreground font-sans antialiased;
     font-family: 'Inter', sans-serif;
@@ -174,8 +181,11 @@
       hsl(260 20% 96%) 75%, 
       hsl(240 15% 97%) 100%
     );
-    background-attachment: fixed;
     min-height: 100vh;
+    margin: 0;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
   }
 
   .dark body {

@@ -588,7 +588,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
   const importSelectedTotal = importTransactions.filter(t => t.selected).reduce((s, t) => s + t.amount, 0);
 
   return (
-    <div className="space-y-4 flex-1" style={{ minHeight: 'calc(100vh - 10rem)' }} {...swipeHandlers}>
+    <div className="space-y-4" {...swipeHandlers}>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-xl font-display font-bold">Cartões de Crédito</h2>
         <div className="flex items-center gap-2">
