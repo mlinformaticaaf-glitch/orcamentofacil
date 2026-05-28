@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, ArrowRight, ArrowLeft, Sparkles, Copy } from 'lucide-react';
+import { Upload, FileText, CheckCircle2, Loader2, ArrowRight, ArrowLeft, Sparkles, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { format, parseISO } from 'date-fns';
@@ -19,6 +19,12 @@ interface ParsedTransaction {
   categoryId?: string;
   selected: boolean;
   isDuplicate: boolean;
+}
+
+type ParsedTransactionResponse = Omit<ParsedTransaction, 'categoryId' | 'selected' | 'isDuplicate'>;
+
+interface FunctionErrorWithContext extends Error {
+  context?: Response;
 }
 
 interface Props {
@@ -79,15 +85,18 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
         body: { content, format: fileFormat },
       });
 
-      if (error) throw error;
-
-      if (data?.error) {
-        toast.error(data.error);
-        setLoading(false);
+      if (error || data?.error) {
+        let message = data?.error || error?.message || 'Erro ao processar arquivo.';
+        const context = (error as FunctionErrorWithContext | null)?.context;
+        if (context instanceof Response) {
+          const payload = await context.clone().json().catch(() => null);
+          message = payload?.error || message;
+        }
+        toast.error(message);
         return;
       }
 
-      const parsed: ParsedTransaction[] = (data.transactions || []).map((t: any) => {
+      const parsed: ParsedTransaction[] = ((data.transactions || []) as ParsedTransactionResponse[]).map((t) => {
         const key = `${t.date}|${normalize(t.description)}|${t.amount}`;
         const isDuplicate = existingKeys.has(key);
         return {
@@ -103,9 +112,9 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
       setTransactions(parsed);
       setStep('review');
       toast.success(`${parsed.length} transações encontradas!${dupeCount > 0 ? ` ${dupeCount} duplicata(s) detectada(s).` : ''}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Import error:', err);
-      toast.error('Erro ao processar arquivo. Verifique o formato.');
+      toast.error(err instanceof Error ? err.message : 'Erro ao processar arquivo. Verifique o formato.');
     } finally {
       setLoading(false);
       if (fileRef.current) fileRef.current.value = '';
@@ -170,7 +179,7 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
       });
 
       toast.success(`${categorizations.length} transações categorizadas automaticamente!`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('AI categorize error:', err);
       toast.error('Erro ao categorizar. Tente novamente.');
     } finally {

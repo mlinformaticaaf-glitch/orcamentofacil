@@ -1,9 +1,13 @@
-// @ts-ignore
+// @ts-expect-error Deno URL imports are resolved by Supabase Edge Functions.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-// @ts-ignore
+// @ts-expect-error Deno URL imports are resolved by Supabase Edge Functions.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-declare const Deno: any;
+declare const Deno: {
+  env: {
+    get(name: string): string | undefined;
+  };
+};
 
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") || "*").split(",").map((s: string) => s.trim());
 
@@ -38,18 +42,19 @@ function detectCSVSeparator(line: string) {
       }
       continue;
     }
+
     if (!inQuotes) {
-      if (char === ',') commaCount += 1;
-      if (char === ';') semicolonCount += 1;
+      if (char === ",") commaCount += 1;
+      if (char === ";") semicolonCount += 1;
     }
   }
 
-  return semicolonCount > commaCount ? ';' : ',';
+  return semicolonCount > commaCount ? ";" : ",";
 }
 
 function parseCSVLine(line: string, separator: string) {
   const values: string[] = [];
-  let current = '';
+  let current = "";
   let inQuotes = false;
 
   for (let i = 0; i < line.length; i++) {
@@ -67,7 +72,7 @@ function parseCSVLine(line: string, separator: string) {
 
     if (char === separator && !inQuotes) {
       values.push(current.trim());
-      current = '';
+      current = "";
       continue;
     }
 
@@ -78,27 +83,39 @@ function parseCSVLine(line: string, separator: string) {
   return values;
 }
 
+function normalizeText(value: string) {
+  return value
+    .trim()
+    .replace(/^\uFEFF/, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
 function parseAmount(rawAmount: string) {
+  const isAccountingNegative = /^\s*\(.*\)\s*$/.test(rawAmount);
   const cleaned = rawAmount
     .trim()
-    .replace(/^\(|\)$/g, '')
-    .replace(/[^
-\d,\.\-]/g, '');
+    .replace(/^\(|\)$/g, "")
+    .replace(/[^\d,.-]/g, "");
 
   if (!cleaned) return NaN;
 
-  if (cleaned.includes(',') && cleaned.indexOf(',') > cleaned.lastIndexOf('.')) {
-    return parseFloat(cleaned.replace(/\./g, '').replace(',', '.'));
+  const sign = isAccountingNegative || cleaned.startsWith("-") ? -1 : 1;
+  const unsigned = cleaned.replace(/-/g, "");
+
+  if (unsigned.includes(",") && unsigned.lastIndexOf(",") > unsigned.lastIndexOf(".")) {
+    return sign * parseFloat(unsigned.replace(/\./g, "").replace(",", "."));
   }
 
-  return parseFloat(cleaned.replace(/,/g, ''));
+  return sign * parseFloat(unsigned.replace(/,/g, ""));
 }
 
 function parseTransactionType(rawType: string) {
-  const type = rawType.trim().toLowerCase();
+  const type = normalizeText(rawType);
   if (!type) return 0;
-  if (/\b(deb|d[eé]bito|saida|sa[ií]da|expense|dr|despesa)\b/i.test(type)) return -1;
-  if (/\b(cr[eé]d|credito|entrad|receita|income|cr)\b/i.test(type)) return 1;
+  if (/\b(deb|debito|saida|expense|dr|despesa)\b/i.test(type)) return -1;
+  if (/\b(cred|credito|entrada|receita|income|cr)\b/i.test(type)) return 1;
   return 0;
 }
 
@@ -111,17 +128,17 @@ function parseDateString(dateStr: string) {
     return `${ofxMatch[1]}-${ofxMatch[2]}-${ofxMatch[3]}`;
   }
 
-  const brMatch = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  const brMatch = raw.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
   if (brMatch) {
     const [, d, m, y] = brMatch;
     const year = y.length === 2 ? `20${y}` : y;
-    return `${year}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    return `${year}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
   }
 
-  const isoMatch = raw.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  const isoMatch = raw.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})$/);
   if (isoMatch) {
     const [, y, m, d] = isoMatch;
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
   }
 
   const parsed = new Date(raw);
@@ -133,28 +150,26 @@ function parseDateString(dateStr: string) {
 }
 
 function parseCSV(content: string): ParsedTransaction[] {
-  const lines = content.trim().split(/\r?\n/).filter(Boolean);
+  const lines = content.trim().split(/\r?\n/).filter(line => line.trim());
   if (lines.length < 2) return [];
 
   const separator = detectCSVSeparator(lines[0]);
-  const headers = parseCSVLine(lines[0], separator).map(h => h.trim().replace(/"/g, '').toLowerCase());
+  const headers = parseCSVLine(lines[0], separator).map(h => normalizeText(h.replace(/"/g, "")));
 
   const dateIdx = headers.findIndex(h => /data|date|dt/i.test(h));
-  const descIdx = headers.findIndex(h => /descri|hist|memo|detail|descrição|descriçã/i.test(h));
+  const descIdx = headers.findIndex(h => /descri|hist|memo|detail|lancamento|historico|documento/i.test(h));
   const amountIdx = headers.findIndex(h => /valor|amount|value|quantia|montante/i.test(h));
-  const debitIdx = headers.findIndex(h => /d[eé]bito|debito|debit|sa[ií]da|saida/i.test(h));
-  const creditIdx = headers.findIndex(h => /cr[eé]dito|credito|credit|entrada|receita/i.test(h));
-  const typeIdx = headers.findIndex(h => /tipo|natureza|movimentação|movimentacao|type|transaction/i.test(h));
+  const debitIdx = headers.findIndex(h => /debito|debit|saida|despesa/i.test(h));
+  const creditIdx = headers.findIndex(h => /credito|credit|entrada|receita/i.test(h));
+  const typeIdx = headers.findIndex(h => /tipo|natureza|movimentacao|type|transaction/i.test(h));
 
   if (dateIdx === -1 || (amountIdx === -1 && debitIdx === -1 && creditIdx === -1)) {
-    throw new Error("Não foi possível identificar as colunas de data e valor no CSV. Certifique-se de que o arquivo contém colunas como 'Data' e 'Valor'.");
+    throw new Error("Nao foi possivel identificar as colunas de data e valor no CSV. O arquivo precisa ter colunas como Data e Valor, ou Data com Debito/Credito.");
   }
 
-  // First pass: parse raw amounts to detect sign conventions in this CSV
   const parsedRows: {
     rawDate: string;
     rawDesc: string;
-    rawAmount: string;
     rawDebit: string;
     rawCredit: string;
     rawType: string;
@@ -169,12 +184,12 @@ function parseCSV(content: string): ParsedTransaction[] {
     if (!line) continue;
 
     const cols = parseCSVLine(line, separator);
-    const rawDate = cols[dateIdx] || '';
-    const rawDesc = descIdx >= 0 ? (cols[descIdx] || '') : '';
-    const rawAmount = amountIdx >= 0 ? (cols[amountIdx] || '') : '';
-    const rawDebit = debitIdx >= 0 ? (cols[debitIdx] || '') : '';
-    const rawCredit = creditIdx >= 0 ? (cols[creditIdx] || '') : '';
-    const rawType = typeIdx >= 0 ? (cols[typeIdx] || '') : '';
+    const rawDate = cols[dateIdx] || "";
+    const rawDesc = descIdx >= 0 ? (cols[descIdx] || "") : "";
+    const rawAmount = amountIdx >= 0 ? (cols[amountIdx] || "") : "";
+    const rawDebit = debitIdx >= 0 ? (cols[debitIdx] || "") : "";
+    const rawCredit = creditIdx >= 0 ? (cols[creditIdx] || "") : "";
+    const rawType = typeIdx >= 0 ? (cols[typeIdx] || "") : "";
 
     let amount = NaN;
     if (amountIdx >= 0) {
@@ -191,100 +206,78 @@ function parseCSV(content: string): ParsedTransaction[] {
 
     if (isNaN(amount) || amount === 0) continue;
 
-    parsedRows.push({ rawDate, rawDesc, rawAmount, rawDebit, rawCredit, rawType, amountValue: amount });
-
-    if (amount > 0) positiveCount++; else if (amount < 0) negativeCount++;
+    parsedRows.push({ rawDate, rawDesc, rawDebit, rawCredit, rawType, amountValue: amount });
+    if (amount > 0) positiveCount += 1;
+    if (amount < 0) negativeCount += 1;
   }
 
-  // Heuristic: if there are negative amounts (payments) and more positive values than negative,
-  // it's likely a credit-card statement where purchases are positive and payments negative.
   const invertPositivesAsExpenses = negativeCount > 0 && positiveCount > negativeCount;
-
   const transactions: ParsedTransaction[] = [];
 
   for (const row of parsedRows) {
-    const { rawDate, rawDesc, rawType, amountValue } = row;
-    let amount = amountValue;
+    const parsedDate = parseDateString(row.rawDate);
+    if (!parsedDate) continue;
 
-    const typeSign = parseTransactionType(rawType);
+    let amount = row.amountValue;
+    const typeSign = parseTransactionType(row.rawType);
     if (typeSign !== 0) {
       amount = Math.abs(amount) * typeSign;
     }
 
-    // Apply inversion for credit-card CSVs detected above
-    if (invertPositivesAsExpenses) {
-      if (amount > 0) {
-        // treat positive as expense
-        transactions.push({
-          date: parseDateString(rawDate) || '',
-          description: rawDesc || `Transação ${rawDate}`,
-          amount: Math.abs(amount),
-          type: 'expense',
-        });
-      } else {
-        // negative likely is payment (income)
-        transactions.push({
-          date: parseDateString(rawDate) || '',
-          description: rawDesc || `Transação ${rawDate}`,
-          amount: Math.abs(amount),
-          type: 'income',
-        });
-      }
-    } else {
-      const parsedDate = parseDateString(rawDate);
-      if (!parsedDate) continue;
-      transactions.push({
-        date: parsedDate,
-        description: rawDesc || `Transação ${rawDate}`,
-        amount: Math.abs(amount),
-        type: amount >= 0 ? 'income' : 'expense',
-      });
-    }
+    transactions.push({
+      date: parsedDate,
+      description: row.rawDesc || `Transacao ${row.rawDate}`,
+      amount: Math.abs(amount),
+      type: invertPositivesAsExpenses
+        ? (amount > 0 ? "expense" : "income")
+        : (amount >= 0 ? "income" : "expense"),
+    });
   }
 
   return transactions;
 }
 
+function decodeOfxText(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
 function parseOFX(content: string): ParsedTransaction[] {
   const transactions: ParsedTransaction[] = [];
+  const normalizedContent = content.replace(/\r/g, "");
 
-  // Extract all STMTTRN blocks
-  const trnRegex = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
+  const trnRegex = /<STMTTRN>([\s\S]*?)(?:<\/STMTTRN>|(?=<STMTTRN>)|(?=<\/(?:BANKTRANLIST|CCSTMTRS|STMTRS)>)|$)/gi;
   let match;
 
-  while ((match = trnRegex.exec(content)) !== null) {
+  while ((match = trnRegex.exec(normalizedContent)) !== null) {
     const block = match[1];
 
     const getField = (name: string): string => {
-      // OFX can be SGML (no closing tags) or XML
-      const xmlMatch = block.match(new RegExp(`<${name}>([^<]*)<\/${name}>`, "i"));
-      if (xmlMatch) return xmlMatch[1].trim();
-      
-      const sgmlMatch = block.match(new RegExp(`<${name}>(.+)`, "im"));
-      if (sgmlMatch) return sgmlMatch[1].trim();
-      
+      const xmlMatch = block.match(new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`, "i"));
+      if (xmlMatch) return decodeOfxText(xmlMatch[1].trim());
+
+      const sgmlMatch = block.match(new RegExp(`<${name}>([^<\\n]*)`, "i"));
+      if (sgmlMatch) return decodeOfxText(sgmlMatch[1].trim());
+
       return "";
     };
 
-    const trnType = getField("TRNTYPE");
     const datePosted = getField("DTPOSTED");
     const trnAmt = getField("TRNAMT");
-    const name = getField("NAME") || "";
-    const memo = getField("MEMO") || "";
-    const description = [name, memo].filter(Boolean).join(" - ") || getField("CHECKNUM") || "Transação OFX";
+    const name = getField("NAME");
+    const memo = getField("MEMO");
+    const description = [name, memo].filter(Boolean).join(" - ") || getField("CHECKNUM") || "Transacao OFX";
 
     if (!datePosted || !trnAmt) continue;
 
-    // Parse OFX date format: YYYYMMDDHHMMSS or YYYYMMDD
-    const year = datePosted.substring(0, 4);
-    const month = datePosted.substring(4, 6);
-    const day = datePosted.substring(6, 8);
-    const parsedDate = `${year}-${month}-${day}`;
+    const parsedDate = parseDateString(datePosted);
+    if (!parsedDate) continue;
 
-    const dateObj = new Date(parsedDate);
-    if (isNaN(dateObj.getTime())) continue;
-
-    const amount = parseFloat(trnAmt.replace(",", "."));
+    const amount = parseAmount(trnAmt);
     if (isNaN(amount) || amount === 0) continue;
 
     transactions.push({
@@ -335,9 +328,8 @@ serve(async (req: Request) => {
       });
     }
 
-    // Limit file size (500KB of text content)
-    if (content.length > 512000) {
-      return new Response(JSON.stringify({ error: "Arquivo muito grande. Limite de 500KB." }), {
+    if (content.length > 1024 * 1024) {
+      return new Response(JSON.stringify({ error: "Arquivo muito grande. Limite de 1MB." }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -346,17 +338,20 @@ serve(async (req: Request) => {
 
     if (fileFormat === "ofx") {
       transactions = parseOFX(content);
-    } else {
+    } else if (fileFormat === "csv") {
       transactions = parseCSV(content);
-    }
-
-    if (transactions.length === 0) {
-      return new Response(JSON.stringify({ error: "Nenhuma transação encontrada no arquivo. Verifique o formato." }), {
+    } else {
+      return new Response(JSON.stringify({ error: "Formato nao suportado. Use CSV, OFX ou QFX." }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Limit to 500 transactions
+    if (transactions.length === 0) {
+      return new Response(JSON.stringify({ error: "Nenhuma transacao encontrada no arquivo. Verifique o formato." }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     if (transactions.length > 500) {
       transactions = transactions.slice(0, 500);
     }
