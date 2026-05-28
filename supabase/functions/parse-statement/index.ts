@@ -119,6 +119,11 @@ function parseTransactionType(rawType: string) {
   return 0;
 }
 
+function isLikelyAmount(value: string) {
+  const amount = parseAmount(value);
+  return !isNaN(amount) && /\d/.test(value);
+}
+
 function parseDateString(dateStr: string) {
   const raw = dateStr.trim();
   if (!raw) return null;
@@ -147,6 +152,21 @@ function parseDateString(dateStr: string) {
   }
 
   return null;
+}
+
+function inferCSVDescription(cols: string[], headers: string[], ignoredIndexes: Set<number>) {
+  const candidates = cols
+    .map((value, index) => ({ value: value.trim(), index, header: headers[index] || "" }))
+    .filter(({ value, index, header }) => {
+      if (!value || ignoredIndexes.has(index)) return false;
+      if (/saldo|balance|conta|agencia|agencia|documento|id|codigo|code/i.test(header)) return false;
+      if (parseDateString(value)) return false;
+      if (isLikelyAmount(value)) return false;
+      return /[a-zA-Z]/.test(value);
+    })
+    .sort((a, b) => b.value.length - a.value.length);
+
+  return candidates[0]?.value || "";
 }
 
 function parseCSV(content: string): ParsedTransaction[] {
@@ -185,11 +205,14 @@ function parseCSV(content: string): ParsedTransaction[] {
 
     const cols = parseCSVLine(line, separator);
     const rawDate = cols[dateIdx] || "";
-    const rawDesc = descIdx >= 0 ? (cols[descIdx] || "") : "";
     const rawAmount = amountIdx >= 0 ? (cols[amountIdx] || "") : "";
     const rawDebit = debitIdx >= 0 ? (cols[debitIdx] || "") : "";
     const rawCredit = creditIdx >= 0 ? (cols[creditIdx] || "") : "";
     const rawType = typeIdx >= 0 ? (cols[typeIdx] || "") : "";
+    const ignoredIndexes = new Set([dateIdx, amountIdx, debitIdx, creditIdx, typeIdx].filter(index => index >= 0));
+    const rawDesc = descIdx >= 0
+      ? (cols[descIdx] || "")
+      : inferCSVDescription(cols, headers, ignoredIndexes);
 
     let amount = NaN;
     if (amountIdx >= 0) {
@@ -249,6 +272,7 @@ function decodeOfxText(value: string) {
 function cleanOfxDescription(value: string) {
   return value
     .replace(/\s+/g, " ")
+    .replace(/^\s*transa[cç][aã]o\s+(\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?|\d{8})\s*[-:*/]?\s*/i, "")
     .replace(/^\s*(compra|compras|pagamento|pgto|debito|credito|lancamento)\s+(cartao|cc|debito|credito)?\s*[-:*/]?\s*/i, "")
     .replace(/^\s*(cartao|cc)\s*[-:*/]\s*/i, "")
     .trim();
@@ -266,14 +290,16 @@ function isGenericOfxDescription(value: string) {
     /^debito$/,
     /^credito$/,
     /^transacao\s+ofx$/,
+    /^transacao(\s+|\s*[-:])?(\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?|\d{8})$/,
+    /^lancamento(\s+|\s*[-:])?(\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?|\d{8})$/,
   ].some(pattern => pattern.test(normalized));
 }
 
 function buildOfxDescription(fields: Record<string, string>) {
   const preferredFields = [
     fields.PAYEE,
-    fields.NAME,
     fields.MEMO,
+    fields.NAME,
     fields.CHECKNUM,
   ];
 
