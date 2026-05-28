@@ -246,6 +246,49 @@ function decodeOfxText(value: string) {
     .replace(/&#39;/g, "'");
 }
 
+function cleanOfxDescription(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/^\s*(compra|compras|pagamento|pgto|debito|credito|lancamento)\s+(cartao|cc|debito|credito)?\s*[-:*/]?\s*/i, "")
+    .replace(/^\s*(cartao|cc)\s*[-:*/]\s*/i, "")
+    .trim();
+}
+
+function isGenericOfxDescription(value: string) {
+  const normalized = normalizeText(value);
+  if (!normalized) return true;
+
+  return [
+    /^compra(s)?$/,
+    /^compra(s)?\s+(cartao|cc|debito|credito)$/,
+    /^pagamento$/,
+    /^pgto$/,
+    /^debito$/,
+    /^credito$/,
+    /^transacao\s+ofx$/,
+  ].some(pattern => pattern.test(normalized));
+}
+
+function buildOfxDescription(fields: Record<string, string>) {
+  const preferredFields = [
+    fields.PAYEE,
+    fields.NAME,
+    fields.MEMO,
+    fields.CHECKNUM,
+  ];
+
+  const cleanedCandidates = preferredFields
+    .map(value => cleanOfxDescription(value || ""))
+    .filter(value => value && !isGenericOfxDescription(value));
+
+  if (cleanedCandidates.length === 0) {
+    return "Transacao OFX";
+  }
+
+  const [primary] = cleanedCandidates;
+  return primary;
+}
+
 function parseOFX(content: string): ParsedTransaction[] {
   const transactions: ParsedTransaction[] = [];
   const normalizedContent = content.replace(/\r/g, "");
@@ -268,9 +311,12 @@ function parseOFX(content: string): ParsedTransaction[] {
 
     const datePosted = getField("DTPOSTED");
     const trnAmt = getField("TRNAMT");
-    const name = getField("NAME");
-    const memo = getField("MEMO");
-    const description = [name, memo].filter(Boolean).join(" - ") || getField("CHECKNUM") || "Transacao OFX";
+    const description = buildOfxDescription({
+      PAYEE: getField("PAYEE"),
+      NAME: getField("NAME"),
+      MEMO: getField("MEMO"),
+      CHECKNUM: getField("CHECKNUM"),
+    });
 
     if (!datePosted || !trnAmt) continue;
 
