@@ -31,13 +31,17 @@ interface ParsedCardTransaction {
 }
 
 function detectInstallments(description: string): { installments?: number; currentInstallment?: number; cleanDescription: string } {
-  // Match patterns like "1/10", "01/12", "PARCELA 3 DE 10", "3/10"
-  const match = description.match(/(\d{1,2})\s*[\/de]{1,2}\s*(\d{1,2})(?:\s*parcela)?/i)
-    || description.match(/parcela\s*(\d{1,2})\s*(?:de|\/)\s*(\d{1,2})/i);
+  // Match patterns like "1/10", "01/12", "PARC 3/10", "PARCELA 3 DE 10", "P03/12".
+  const patterns = [
+    /\b(?:parc(?:ela)?|prest(?:acao)?|p)\s*\.?\s*(\d{1,2})\s*(?:\/|de|-)\s*(\d{1,2})\b/i,
+    /\b(\d{1,2})\s*(?:\/|de|-)\s*(\d{1,2})\s*(?:parc(?:ela)?|prest(?:acao)?)\b/i,
+    /\b(\d{1,2})\s*\/\s*(\d{1,2})\b/i,
+  ];
+  const match = patterns.map(pattern => description.match(pattern)).find(Boolean);
   if (match) {
     const current = parseInt(match[1], 10);
     const total = parseInt(match[2], 10);
-    if (total >= 2 && total <= 99 && current >= 1 && current <= total) {
+    if (total >= 2 && total <= 48 && current >= 1 && current <= total) {
       const clean = description
         .replace(match[0], '')
         .replace(/\s{2,}/g, ' ')

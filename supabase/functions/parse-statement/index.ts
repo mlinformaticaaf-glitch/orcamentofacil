@@ -124,6 +124,10 @@ function isLikelyAmount(value: string) {
   return !isNaN(amount) && /\d/.test(value);
 }
 
+function hasLetters(value: string) {
+  return /[a-zA-Z\u00C0-\u024F]/.test(value);
+}
+
 function parseDateString(dateStr: string) {
   const raw = dateStr.trim();
   if (!raw) return null;
@@ -295,24 +299,75 @@ function isGenericOfxDescription(value: string) {
   ].some(pattern => pattern.test(normalized));
 }
 
+function isUsefulOfxDescription(value: string) {
+  if (!value || isGenericOfxDescription(value)) return false;
+  if (!hasLetters(value)) return false;
+  if (parseDateString(value)) return false;
+  if (isLikelyAmount(value)) return false;
+  return true;
+}
+
+function hasInstallmentPattern(value: string) {
+  return /\b(?:parc(?:ela)?|prest(?:acao)?|p)\s*\.?\s*\d{1,2}\s*(?:\/|de|-)\s*\d{1,2}\b/i.test(value)
+    || /\b\d{1,2}\s*\/\s*\d{1,2}\b/i.test(value);
+}
+
+function scoreOfxDescription(value: string, fieldName: string) {
+  const normalizedField = fieldName.toUpperCase();
+  let score = value.length;
+
+  if (["PAYEE", "MEMO", "NAME", "DESCRIPTION", "DESC", "MERCHANT", "EXTDNAME"].includes(normalizedField)) {
+    score += 100;
+  }
+  if (hasInstallmentPattern(value)) {
+    score += 40;
+  }
+  if (/transa[cç][aã]o|lancamento|compra|cartao|credito|debito/i.test(value)) {
+    score -= 30;
+  }
+  if (/^\d+$/.test(value.replace(/\D/g, ""))) {
+    score -= 100;
+  }
+
+  return score;
+}
+
 function buildOfxDescription(fields: Record<string, string>) {
   const preferredFields = [
-    fields.PAYEE,
-    fields.MEMO,
-    fields.NAME,
-    fields.CHECKNUM,
+    ["PAYEE", fields.PAYEE],
+    ["MEMO", fields.MEMO],
+    ["NAME", fields.NAME],
+    ["DESCRIPTION", fields.DESCRIPTION],
+    ["DESC", fields.DESC],
+    ["MERCHANT", fields.MERCHANT],
+    ["EXTDNAME", fields.EXTDNAME],
+    ["CHECKNUM", fields.CHECKNUM],
   ];
 
-  const cleanedCandidates = preferredFields
-    .map(value => cleanOfxDescription(value || ""))
-    .filter(value => value && !isGenericOfxDescription(value));
+  const ignoredFields = new Set(["TRNTYPE", "DTPOSTED", "DTUSER", "DTAVAIL", "TRNAMT", "FITID", "CORRECTFITID", "CORRECTACTION", "SIC", "MCC"]);
+  const allFields = Object.entries(fields)
+    .filter(([fieldName]) => !ignoredFields.has(fieldName.toUpperCase()));
+
+  const cleanedCandidates = [...preferredFields, ...allFields]
+    .map(([fieldName, value]) => ({
+      fieldName,
+      value: cleanOfxDescription(value || ""),
+    }))
+    .filter(candidate => isUsefulOfxDescription(candidate.value))
+    .sort((a, b) => scoreOfxDescription(b.value, b.fieldName) - scoreOfxDescription(a.value, a.fieldName));
 
   if (cleanedCandidates.length === 0) {
     return "Transacao OFX";
   }
 
   const [primary] = cleanedCandidates;
-  return primary;
+  const installmentCandidate = cleanedCandidates.find(candidate => hasInstallmentPattern(candidate.value));
+
+  if (installmentCandidate && installmentCandidate.value !== primary.value && !hasInstallmentPattern(primary.value)) {
+    return `${primary.value} ${installmentCandidate.value}`;
+  }
+
+  return primary.value;
 }
 
 function parseOFX(content: string): ParsedTransaction[] {
@@ -335,9 +390,16 @@ function parseOFX(content: string): ParsedTransaction[] {
       return "";
     };
 
+    const fields = Object.fromEntries(
+      [...block.matchAll(/<([A-Z0-9_]+)>([^<\n]*)/gi)]
+        .map(([, name, value]) => [name.toUpperCase(), decodeOfxText(value.trim())])
+        .filter(([, value]) => value)
+    );
+
     const datePosted = getField("DTPOSTED");
     const trnAmt = getField("TRNAMT");
     const description = buildOfxDescription({
+      ...fields,
       PAYEE: getField("PAYEE"),
       NAME: getField("NAME"),
       MEMO: getField("MEMO"),
