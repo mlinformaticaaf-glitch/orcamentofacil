@@ -12,7 +12,22 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Trash2, CreditCard as CreditCardIcon, ChevronLeft, ChevronRight, Upload, FileText, Loader2, ArrowLeft, ArrowRight, CheckCircle2, Sparkles, Copy, Pencil, Repeat, CalendarIcon, ShoppingCart, RotateCcw } from 'lucide-react';
+import { Trash2, CreditCard as CreditCardIcon, ChevronLeft, ChevronRight, Upload, FileText, Loader2, ArrowLeft, ArrowRight, CheckCircle2, Copy, Pencil, Repeat, CalendarIcon, ShoppingCart, RotateCcw, Wand2 } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { CreditCard as CreditCardType, Expense, Category, Account } from '@/types/budget';
+import { useSwipe } from '@/hooks/useSwipe';
+import { supabase } from '@/integrations/supabase/client';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Calendar } from '@/components/ui/calendar';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Trash2, CreditCard as CreditCardIcon, ChevronLeft, ChevronRight, Upload, FileText, Loader2, ArrowLeft, ArrowRight, CheckCircle2, Copy, Pencil, Repeat, CalendarIcon, ShoppingCart, RotateCcw, Wand2 } from 'lucide-react';
 import { PageFAB } from '@/components/PageFAB';
 import { format, parseISO, addMonths, subMonths, startOfMonth, endOfMonth, isWithinInterval } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -22,6 +37,7 @@ import { cn } from '@/lib/utils';
 interface ParsedCardTransaction {
   date: string;
   description: string;
+  originalDescription?: string;
   amount: number;
   categoryId?: string;
   selected: boolean;
@@ -114,7 +130,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
   const [importOpen, setImportOpen] = useState(false);
   const [importCardId, setImportCardId] = useState<string>('');
   const [importLoading, setImportLoading] = useState(false);
-  const [importCategorizing, setImportCategorizing] = useState(false);
+  const [importEnriching, setImportEnriching] = useState(false);
   const [importTransactions, setImportTransactions] = useState<ParsedCardTransaction[]>([]);
   const [importStep, setImportStep] = useState<'select' | 'review' | 'done'>('select');
   const [importingData, setImportingData] = useState(false);
@@ -213,6 +229,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
         return {
           date: t.date,
           description: cleanDescription,
+          originalDescription: t.originalDescription,
           amount: amt,
           categoryId: isRefund ? refundCategoryId : defaultCategoryId,
           selected: !isDuplicate,
@@ -226,6 +243,45 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
       setImportTransactions(parsed);
       setImportStep('review');
       toast.success(`${parsed.length} lançamentos encontrados!${dupeCount > 0 ? ` ${dupeCount} duplicata(s).` : ''}`);
+
+      // Automatically enrich descriptions and categorize via Groq
+      setImportEnriching(true);
+      try {
+        const { data: enrichData, error: enrichError } = await supabase.functions.invoke('enrich-descriptions', {
+          body: {
+            transactions: parsed.map(t => ({
+              description: t.description,
+              originalDescription: t.originalDescription,
+              amount: Math.abs(t.amount),
+              type: t.amount < 0 ? 'income' : 'expense',
+            })),
+            categories: categories.map(c => ({ id: c.id, name: c.name, type: c.type })),
+          },
+        });
+
+        if (!enrichError && !enrichData?.error && enrichData?.enrichments) {
+          const enrichments: { index: number; cleanDescription: string; categoryId?: string }[] = enrichData.enrichments;
+          setImportTransactions(prev => {
+            const updated = [...prev];
+            for (const e of enrichments) {
+              if (e.index >= 0 && e.index < updated.length) {
+                // Don't override refund category
+                const isRefund = updated[e.index].amount < 0;
+                updated[e.index] = {
+                  ...updated[e.index],
+                  ...(e.cleanDescription ? { description: e.cleanDescription } : {}),
+                  ...(!isRefund && e.categoryId ? { categoryId: e.categoryId } : {}),
+                };
+              }
+            }
+            return updated;
+          });
+        }
+      } catch (enrichErr) {
+        console.warn('Card enrichment skipped:', enrichErr);
+      } finally {
+        setImportEnriching(false);
+      }
     } catch (err: any) {
       console.error('Card import error:', err);
       toast.error('Erro ao processar arquivo.');
@@ -235,38 +291,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     }
   };
 
-  const handleImportAICategorize = async () => {
-    if (categories.length === 0) { toast.error('Crie categorias primeiro.'); return; }
-    setImportCategorizing(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('categorize-transactions', {
-        body: {
-          transactions: importTransactions.map(t => ({ description: t.description, amount: t.amount, type: 'expense' })),
-          categories: categories.map(c => ({ id: c.id, name: c.name, type: c.type })),
-        },
-      });
-      if (error) throw error;
-      if (data?.error) { toast.error(data.error); return; }
 
-      const categorizations: { index: number; categoryId: string }[] = data.categorizations || [];
-      setImportTransactions(prev => {
-        const updated = [...prev];
-        for (const cat of categorizations) {
-          if (cat.index >= 0 && cat.index < updated.length) {
-            // Don't override refund category — keep refundCategoryId for refunds
-            if (updated[cat.index].amount < 0) continue;
-            updated[cat.index] = { ...updated[cat.index], categoryId: cat.categoryId };
-          }
-        }
-        return updated;
-      });
-      toast.success(`${categorizations.length} lançamentos categorizados!`);
-    } catch {
-      toast.error('Erro ao categorizar.');
-    } finally {
-      setImportCategorizing(false);
-    }
-  };
 
   const handleImportConfirm = async () => {
     const selected = importTransactions.filter(t => t.selected);
@@ -677,13 +702,15 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                 {importStep === 'review' && (
                   <div className="flex flex-col flex-1 min-h-0 space-y-3">
                     <div className="flex flex-col gap-2">
+                      {importEnriching && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-lg px-3 py-2">
+                          <Wand2 className="w-3.5 h-3.5 animate-pulse text-primary" />
+                          <span>Identificando empresas e categorizando automaticamente...</span>
+                        </div>
+                      )}
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Button variant="ghost" size="sm" className="text-xs px-2 h-8" onClick={() => setImportTransactions(prev => prev.map(t => ({ ...t, selected: true })))}>Selecionar todos</Button>
                         <Button variant="ghost" size="sm" className="text-xs px-2 h-8" onClick={() => setImportTransactions(prev => prev.map(t => ({ ...t, selected: false })))}>Limpar</Button>
-                        <Button variant="outline" size="sm" className="gap-1 text-xs px-2.5 h-8" onClick={handleImportAICategorize} disabled={importCategorizing}>
-                          {importCategorizing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                          {importCategorizing ? 'Categorizando...' : 'Categorizar IA'}
-                        </Button>
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {importSelectedCount} selecionados
@@ -791,9 +818,9 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                       <Button variant="outline" onClick={() => { setImportStep('select'); setImportTransactions([]); }} className="gap-2">
                         <ArrowLeft className="w-4 h-4" /> Voltar
                       </Button>
-                      <Button onClick={handleImportConfirm} disabled={importingData || importSelectedCount === 0} className="flex-1 gap-2">
+                      <Button onClick={handleImportConfirm} disabled={importingData || importEnriching || importSelectedCount === 0} className="flex-1 gap-2">
                         {importingData ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
-                        {importingData ? 'Importando...' : `Importar ${importSelectedCount} lançamentos`}
+                        {importingData ? 'Importando...' : importEnriching ? 'Aguarde a IA...' : `Importar ${importSelectedCount} lançamentos`}
                       </Button>
                     </div>
                   </div>

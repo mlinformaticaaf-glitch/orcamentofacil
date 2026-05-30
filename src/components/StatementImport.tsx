@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Upload, FileText, CheckCircle2, Loader2, ArrowRight, ArrowLeft, Sparkles, Copy } from 'lucide-react';
+import { Upload, FileText, CheckCircle2, Loader2, ArrowRight, ArrowLeft, Copy, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { format, parseISO } from 'date-fns';
@@ -14,6 +14,7 @@ import { format, parseISO } from 'date-fns';
 interface ParsedTransaction {
   date: string;
   description: string;
+  originalDescription?: string;
   amount: number;
   type: 'expense' | 'income';
   categoryId?: string;
@@ -42,7 +43,7 @@ function formatCurrency(value: number) {
 export function StatementImport({ categories, expenses, incomes, onAddExpense, onAddIncome }: Props) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [categorizing, setCategorizing] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const [transactions, setTransactions] = useState<ParsedTransaction[]>([]);
   const [step, setStep] = useState<'upload' | 'review' | 'done'>('upload');
   const [importing, setImporting] = useState(false);
@@ -108,10 +109,46 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
       });
 
       const dupeCount = parsed.filter(t => t.isDuplicate).length;
-
       setTransactions(parsed);
       setStep('review');
       toast.success(`${parsed.length} transações encontradas!${dupeCount > 0 ? ` ${dupeCount} duplicata(s) detectada(s).` : ''}`);
+
+      // Automatically enrich descriptions and categorize via Groq
+      setEnriching(true);
+      try {
+        const { data: enrichData, error: enrichError } = await supabase.functions.invoke('enrich-descriptions', {
+          body: {
+            transactions: parsed.map(t => ({
+              description: t.description,
+              originalDescription: t.originalDescription,
+              amount: t.amount,
+              type: t.type,
+            })),
+            categories: categories.map(c => ({ id: c.id, name: c.name, type: c.type })),
+          },
+        });
+
+        if (!enrichError && !enrichData?.error && enrichData?.enrichments) {
+          const enrichments: { index: number; cleanDescription: string; categoryId?: string }[] = enrichData.enrichments;
+          setTransactions(prev => {
+            const updated = [...prev];
+            for (const e of enrichments) {
+              if (e.index >= 0 && e.index < updated.length) {
+                updated[e.index] = {
+                  ...updated[e.index],
+                  ...(e.cleanDescription ? { description: e.cleanDescription } : {}),
+                  ...(e.categoryId ? { categoryId: e.categoryId } : {}),
+                };
+              }
+            }
+            return updated;
+          });
+        }
+      } catch (enrichErr) {
+        console.warn('Enrichment skipped:', enrichErr);
+      } finally {
+        setEnriching(false);
+      }
     } catch (err: unknown) {
       console.error('Import error:', err);
       toast.error(err instanceof Error ? err.message : 'Erro ao processar arquivo. Verifique o formato.');
@@ -135,56 +172,6 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
 
   const setTypeForItem = (idx: number, type: 'expense' | 'income') => {
     setTransactions(prev => prev.map((t, i) => i === idx ? { ...t, type, categoryId: type === 'expense' ? defaultCategoryId : defaultIncomeCategoryId } : t));
-  };
-
-  const handleAICategorize = async () => {
-    if (categories.length === 0) {
-      toast.error('Crie categorias antes de usar a categorização automática.');
-      return;
-    }
-
-    setCategorizing(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('categorize-transactions', {
-        body: {
-          transactions: transactions.map(t => ({
-            description: t.description,
-            amount: t.amount,
-            type: t.type,
-          })),
-          categories: categories.map(c => ({
-            id: c.id,
-            name: c.name,
-            type: c.type,
-          })),
-        },
-      });
-
-      if (error) throw error;
-      if (data?.error) {
-        toast.error(data.error);
-        return;
-      }
-
-      const categorizations: { index: number; categoryId: string }[] = data.categorizations || [];
-      
-      setTransactions(prev => {
-        const updated = [...prev];
-        for (const cat of categorizations) {
-          if (cat.index >= 0 && cat.index < updated.length) {
-            updated[cat.index] = { ...updated[cat.index], categoryId: cat.categoryId };
-          }
-        }
-        return updated;
-      });
-
-      toast.success(`${categorizations.length} transações categorizadas automaticamente!`);
-    } catch (err: unknown) {
-      console.error('AI categorize error:', err);
-      toast.error('Erro ao categorizar. Tente novamente.');
-    } finally {
-      setCategorizing(false);
-    }
   };
 
   const handleImport = async () => {
@@ -295,6 +282,7 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
                 <li>• OFX/QFX: formato padrão bancário, funciona automaticamente</li>
                 <li>• Valores negativos são importados como despesas</li>
                 <li>• Valores positivos são importados como receitas</li>
+                <li>• A IA identifica o nome da empresa e categoriza automaticamente</li>
               </ul>
             </Card>
           </div>
@@ -302,14 +290,16 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
 
         {step === 'review' && (
           <div className="flex flex-col flex-1 min-h-0 space-y-3">
+            {enriching && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-lg px-3 py-2">
+                <Wand2 className="w-3.5 h-3.5 animate-pulse text-primary" />
+                <span>Identificando empresas e categorizando automaticamente...</span>
+              </div>
+            )}
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <Button variant="ghost" size="sm" onClick={() => toggleAll(true)}>Selecionar todos</Button>
                 <Button variant="ghost" size="sm" onClick={() => toggleAll(false)}>Limpar seleção</Button>
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={handleAICategorize} disabled={categorizing}>
-                  {categorizing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                  {categorizing ? 'Categorizando...' : 'Categorizar com IA'}
-                </Button>
               </div>
               <p className="text-sm text-muted-foreground">
                 {selectedCount} selecionadas
@@ -379,9 +369,9 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
               <Button variant="outline" onClick={() => { setStep('upload'); setTransactions([]); }} className="gap-2">
                 <ArrowLeft className="w-4 h-4" /> Voltar
               </Button>
-              <Button onClick={handleImport} disabled={importing || selectedCount === 0} className="flex-1 gap-2">
+              <Button onClick={handleImport} disabled={importing || enriching || selectedCount === 0} className="flex-1 gap-2">
                 {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
-                {importing ? 'Importando...' : `Importar ${selectedCount} transações`}
+                {importing ? 'Importando...' : enriching ? 'Aguarde a IA...' : `Importar ${selectedCount} transações`}
               </Button>
             </div>
           </div>
