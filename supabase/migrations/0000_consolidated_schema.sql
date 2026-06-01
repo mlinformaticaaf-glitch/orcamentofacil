@@ -48,6 +48,7 @@ CREATE TABLE public.credit_cards (
   due_day INTEGER NOT NULL DEFAULT 20,
   color TEXT NOT NULL DEFAULT 'hsl(215, 80%, 55%)',
   account_id UUID REFERENCES public.accounts(id) ON DELETE SET NULL,
+  cover_image_url TEXT,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 

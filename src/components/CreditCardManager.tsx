@@ -27,7 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Trash2, CreditCard as CreditCardIcon, ChevronLeft, ChevronRight, Upload, FileText, Loader2, ArrowLeft, ArrowRight, CheckCircle2, Copy, Pencil, Repeat, CalendarIcon, ShoppingCart, RotateCcw, Wand2 } from 'lucide-react';
+import { Trash2, CreditCard as CreditCardIcon, ChevronLeft, ChevronRight, Upload, FileText, Loader2, ArrowLeft, ArrowRight, CheckCircle2, Copy, Pencil, Repeat, CalendarIcon, ShoppingCart, RotateCcw, Wand2, ImagePlus, X } from 'lucide-react';
 import { PageFAB } from '@/components/PageFAB';
 import { format, parseISO, addMonths, subMonths, startOfMonth, endOfMonth, isWithinInterval } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -95,6 +95,8 @@ const CARD_COLORS = [
   'hsl(330, 70%, 50%)',
 ];
 
+const MAX_CARD_COVER_IMAGE_SIZE = 1024 * 1024;
+
 export function CreditCardManager({ cards, expenses, categories, accounts = [], onAddCard, onUpdateCard, onDeleteCard, onAddExpense, onUpdateExpense, onDeleteExpense }: Props) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<CreditCardType | null>(null);
@@ -105,6 +107,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
   const [dueDay, setDueDay] = useState('20');
   const [color, setColor] = useState(CARD_COLORS[0]);
   const [cardAccountId, setCardAccountId] = useState<string>('none');
+  const [cardCoverImageUrl, setCardCoverImageUrl] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [partialPayOpen, setPartialPayOpen] = useState<string | null>(null);
   const [partialPayAmount, setPartialPayAmount] = useState('');
@@ -152,6 +155,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     setDueDay(String(card.dueDay));
     setColor(card.color);
     setCardAccountId(card.accountId || 'none');
+    setCardCoverImageUrl(card.coverImageUrl || '');
     setOpen(true);
   };
 
@@ -164,7 +168,35 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     setDueDay('20');
     setColor(CARD_COLORS[0]);
     setCardAccountId('none');
+    setCardCoverImageUrl('');
     setOpen(true);
+  };
+
+  const handleCardCoverSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      toast.error('Selecione um arquivo de imagem.');
+      event.target.value = '';
+      return;
+    }
+
+    if (file.size > MAX_CARD_COVER_IMAGE_SIZE) {
+      toast.error('Imagem muito grande. Use uma imagem de ate 1MB.');
+      event.target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setCardCoverImageUrl(reader.result);
+      }
+    };
+    reader.onerror = () => toast.error('Nao foi possivel carregar a imagem.');
+    reader.readAsDataURL(file);
+    event.target.value = '';
   };
 
   const handleSave = () => {
@@ -177,6 +209,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
       dueDay: Math.min(31, Math.max(1, Number(dueDay))),
       color,
       accountId: cardAccountId !== 'none' ? cardAccountId : undefined,
+      coverImageUrl: cardCoverImageUrl || undefined,
     };
     if (editing) {
       onUpdateCard({ ...cardData, id: editing.id });
@@ -396,6 +429,13 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
 
     // Editing existing expense
     if (editingExpense) {
+      const shouldUpdateFutureInstallments =
+        !purchaseIsRefund &&
+        editingExpense.installments &&
+        editingExpense.installments > 1 &&
+        editingExpense.currentInstallment &&
+        editingExpense.categoryId !== purchaseCategoryId;
+
       await onUpdateExpense({
         ...editingExpense,
         description: purchaseDesc,
@@ -403,6 +443,18 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
         date: format(purchaseDate, 'yyyy-MM-dd'),
         categoryId: purchaseIsRefund ? refundCategoryId : purchaseCategoryId,
       });
+      if (shouldUpdateFutureInstallments) {
+        const futureInstallments = findRelatedInstallments(editingExpense).filter(e =>
+          (e.currentInstallment || 0) > (editingExpense.currentInstallment || 0)
+        );
+
+        for (const installment of futureInstallments) {
+          await onUpdateExpense({
+            ...installment,
+            categoryId: purchaseCategoryId,
+          });
+        }
+      }
       toast.success('Lançamento atualizado!');
       setPurchaseOpen(false);
       setEditingExpense(null);
@@ -881,6 +933,34 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                     ))}
                   </div>
                 </div>
+                <div>
+                  <Label>Capa do cartao</Label>
+                  <div className="mt-2 space-y-2">
+                    {cardCoverImageUrl && (
+                      <div className="relative h-28 overflow-hidden rounded-md border border-border">
+                        <img src={cardCoverImageUrl} alt="Capa do cartao" className="h-full w-full object-cover" />
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="secondary"
+                          className="absolute right-2 top-2 h-8 w-8"
+                          onClick={() => setCardCoverImageUrl('')}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                    <div>
+                      <Input id="card-cover-image" type="file" accept="image/*" onChange={handleCardCoverSelect} className="hidden" />
+                      <Button type="button" variant="outline" className="w-full gap-2" asChild>
+                        <label htmlFor="card-cover-image" className="cursor-pointer">
+                          <ImagePlus className="h-4 w-4" />
+                          {cardCoverImageUrl ? 'Trocar imagem' : 'Anexar imagem'}
+                        </label>
+                      </Button>
+                    </div>
+                  </div>
+                </div>
                 {accounts.length > 0 && (
                   <div>
                     <Label>Conta vinculada</Label>
@@ -951,16 +1031,23 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                 className="p-5 text-white relative overflow-hidden"
                 style={{ background: `linear-gradient(135deg, ${card.color}, ${card.color}dd)` }}
               >
-                <div className="absolute top-0 right-0 w-32 h-32 rounded-full opacity-10 -translate-y-8 translate-x-8" style={{ backgroundColor: 'white' }} />
-                <div className="flex items-start justify-between">
+                {card.coverImageUrl ? (
+                  <>
+                    <img src={card.coverImageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                    <div className="absolute inset-0 bg-black/40" />
+                  </>
+                ) : (
+                  <div className="absolute top-0 right-0 w-32 h-32 rounded-full opacity-10 -translate-y-8 translate-x-8" style={{ backgroundColor: 'white' }} />
+                )}
+                <div className="relative z-10 flex items-start justify-between">
                   <div>
                     <p className="text-sm opacity-80">Cartão de Crédito</p>
                     <p className="text-lg font-bold font-display mt-1">{card.name}</p>
                   </div>
                   <CreditCardIcon className="w-8 h-8 opacity-60" />
                 </div>
-                <p className="text-lg tracking-widest mt-4 font-mono">•••• •••• •••• {card.lastDigits}</p>
-                <div className="flex justify-between mt-4 text-sm">
+                <p className="relative z-10 text-lg tracking-widest mt-4 font-mono">•••• •••• •••• {card.lastDigits}</p>
+                <div className="relative z-10 flex justify-between mt-4 text-sm">
                   <div>
                     <p className="opacity-70">Fecha dia</p>
                     <p className="font-semibold">{card.closingDay}</p>

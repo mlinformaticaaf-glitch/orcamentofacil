@@ -46,6 +46,7 @@ export interface CreditCard {
   dueDay: number; // 1-31
   color: string;
   accountId?: string;
+  coverImageUrl?: string;
 }
 
 export type AccountType = 'checking' | 'savings' | 'wallet' | 'other';

@@ -53,6 +53,7 @@ export function useBudgetStore() {
         id: c.id, name: c.name, lastDigits: c.last_digits, limit: Number(c.credit_limit),
         closingDay: c.closing_day, dueDay: c.due_day, color: c.color,
         accountId: c.account_id ?? undefined,
+        coverImageUrl: c.cover_image_url ?? undefined,
       })));
       setAccounts((accRes.data || []).map((a) => ({
         id: a.id, name: a.name, type: a.type as Account['type'], icon: a.icon, color: a.color,
@@ -179,13 +180,14 @@ export function useBudgetStore() {
     const { data, error } = await supabase.from('credit_cards').insert({
       user_id: user.id, name: card.name, last_digits: card.lastDigits,
       credit_limit: card.limit, closing_day: card.closingDay, due_day: card.dueDay, color: card.color,
-      account_id: card.accountId ?? null,
+      account_id: card.accountId ?? null, cover_image_url: card.coverImageUrl ?? null,
     }).select().single();
     if (error) { toast.error('Erro ao salvar cartão.'); console.error(error); return; }
     if (data) setCreditCards(prev => [...prev, {
       id: data.id, name: data.name, lastDigits: data.last_digits, limit: Number(data.credit_limit),
       closingDay: data.closing_day, dueDay: data.due_day, color: data.color,
       accountId: data.account_id ?? undefined,
+      coverImageUrl: data.cover_image_url ?? undefined,
     }]);
   }, [user]);
 
@@ -194,7 +196,7 @@ export function useBudgetStore() {
     const { error } = await supabase.from('credit_cards').update({
       name: card.name, last_digits: card.lastDigits, credit_limit: card.limit,
       closing_day: card.closingDay, due_day: card.dueDay, color: card.color,
-      account_id: card.accountId ?? null,
+      account_id: card.accountId ?? null, cover_image_url: card.coverImageUrl ?? null,
     }).eq('id', card.id).eq('user_id', user.id);
     if (error) { toast.error('Erro ao atualizar cartão.'); console.error(error); return; }
     setCreditCards(prev => prev.map(c => c.id === card.id ? card : c));
