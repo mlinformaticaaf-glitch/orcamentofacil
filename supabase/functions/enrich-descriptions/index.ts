@@ -20,6 +20,28 @@ function sanitizeText(text: string, maxLen = 200): string {
   return text.replace(/[\x00-\x1F\x7F]/g, '').slice(0, maxLen);
 }
 
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct";
+
+function getOpenRouterModel() {
+  return Deno.env.get("OPENROUTER_MODEL") || DEFAULT_OPENROUTER_MODEL;
+}
+
+function getOpenRouterHeaders(apiKey: string) {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const referer = Deno.env.get("OPENROUTER_SITE_URL");
+  if (referer) headers["HTTP-Referer"] = referer;
+
+  const title = Deno.env.get("OPENROUTER_APP_NAME");
+  if (title) headers["X-Title"] = title;
+
+  return headers;
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: getCorsHeaders(req) });
@@ -48,9 +70,9 @@ serve(async (req: Request) => {
       });
     }
 
-    const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
-    if (!GROQ_API_KEY) {
-      return new Response(JSON.stringify({ error: "GROQ_API_KEY is not configured" }), {
+    const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
+    if (!OPENROUTER_API_KEY) {
+      return new Response(JSON.stringify({ error: "OPENROUTER_API_KEY is not configured" }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -157,14 +179,11 @@ Responda APENAS com um JSON array, um objeto por transação:
 
 LEMBRE: se não identificar a empresa, copie o texto original EXATAMENTE. NUNCA use termos genéricos.`;
 
-    const aiResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const aiResponse = await fetch(OPENROUTER_API_URL, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers: getOpenRouterHeaders(OPENROUTER_API_KEY),
       body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
+        model: getOpenRouterModel(),
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
@@ -212,8 +231,11 @@ LEMBRE: se não identificar a empresa, copie o texto original EXATAMENTE. NUNCA 
       });
     }
 
-    // Lista de termos genericos que a IA nao deve retornar
-    const GENERIC_TERMS = /^(transac[aã]o(\s+ofx)?|lan[cç]amento(\s+importado)?|compras?|p[ag]to|d[eé]bito|cr[eé]dito|pagamento|importado|sem\s+descri[cç][aã]o|n[aã]o\s+identificado|desconhecido|n\/a|-)$/i;
+    // Regex que cobre datas nos formatos: DD/MM/YYYY, DD-MM-YYYY, DDMMYYYY, YYYY-MM-DD, YYYY/MM/DD
+    const DATE_PATTERN = /(?:\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?|\d{8}|\d{4}[-/]\d{1,2}[-/]\d{1,2})/;
+
+    // Lista de termos genéricos que a IA não deve retornar
+    const GENERIC_TERMS = new RegExp(`^(transac[aã]o(?:\\s+ofx)?|lan[cç]amento(?:\\s+importado)?|compras?|p[ag]to|d[eé]bito|cr[eé]dito|pagamento|importado|sem\\s+descri[cç][aã]o|n[aã]o\\s+identificado|desconhecido|n\\/a|-|(?:transac[aã]o|lan[cç]amento)[\\s*[\\-:]*]?${DATE_PATTERN.source})$`, 'i');
 
     // Validate and sanitize results
     const validCategoryIds = new Set(validCategories.map((c: any) => c.id));

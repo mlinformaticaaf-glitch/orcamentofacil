@@ -21,6 +21,28 @@ function sanitizeText(text: string, maxLen = 200): string {
   return text.replace(/[\x00-\x1F\x7F]/g, '').slice(0, maxLen);
 }
 
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct";
+
+function getOpenRouterModel() {
+  return Deno.env.get("OPENROUTER_MODEL") || DEFAULT_OPENROUTER_MODEL;
+}
+
+function getOpenRouterHeaders(apiKey: string) {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const referer = Deno.env.get("OPENROUTER_SITE_URL");
+  if (referer) headers["HTTP-Referer"] = referer;
+
+  const title = Deno.env.get("OPENROUTER_APP_NAME");
+  if (title) headers["X-Title"] = title;
+
+  return headers;
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: getCorsHeaders(req) });
@@ -49,9 +71,9 @@ serve(async (req: Request) => {
       });
     }
 
-    const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
-    if (!GROQ_API_KEY) {
-      return new Response(JSON.stringify({ error: "GROQ_API_KEY is not configured" }), {
+    const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
+    if (!OPENROUTER_API_KEY) {
+      return new Response(JSON.stringify({ error: "OPENROUTER_API_KEY is not configured" }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -150,14 +172,11 @@ Responda APENAS com um JSON array de objetos, um para cada transação, no forma
 
 Não inclua explicações, apenas o JSON.`;
 
-    const aiResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const aiResponse = await fetch(OPENROUTER_API_URL, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers: getOpenRouterHeaders(OPENROUTER_API_KEY),
       body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
+        model: getOpenRouterModel(),
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },

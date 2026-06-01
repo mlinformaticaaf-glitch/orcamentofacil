@@ -113,7 +113,7 @@ export function StatementImport({ categories, expenses, incomes, onAddExpense, o
       setStep('review');
       toast.success(`${parsed.length} transações encontradas!${dupeCount > 0 ? ` ${dupeCount} duplicata(s) detectada(s).` : ''}`);
 
-      // Automatically enrich descriptions and categorize via Groq
+      // Automatically enrich descriptions and categorize via OpenRouter
       setEnriching(true);
       try {
         const { data: enrichData, error: enrichError } = await supabase.functions.invoke('enrich-descriptions', {

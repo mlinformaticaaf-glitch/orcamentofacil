@@ -47,6 +47,28 @@ function getInstallmentText(value: string) {
     || "";
 }
 
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct";
+
+function getOpenRouterModel() {
+  return Deno.env.get("OPENROUTER_MODEL") || DEFAULT_OPENROUTER_MODEL;
+}
+
+function getOpenRouterHeaders(apiKey: string) {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const referer = Deno.env.get("OPENROUTER_SITE_URL");
+  if (referer) headers["HTTP-Referer"] = referer;
+
+  const title = Deno.env.get("OPENROUTER_APP_NAME");
+  if (title) headers["X-Title"] = title;
+
+  return headers;
+}
+
 function parseJsonArray(value: string) {
   const jsonMatch = value.match(/\[[\s\S]*\]/);
   if (!jsonMatch) return null;
@@ -59,9 +81,9 @@ function parseJsonArray(value: string) {
   }
 }
 
-async function enrichDescriptionsWithGroq(transactions: ParsedTransaction[]) {
-  const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
-  if (!GROQ_API_KEY || transactions.length === 0) {
+async function enrichDescriptionsWithOpenRouter(transactions: ParsedTransaction[]) {
+  const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
+  if (!OPENROUTER_API_KEY || transactions.length === 0) {
     return transactions;
   }
 
@@ -114,14 +136,11 @@ Responda APENAS com um JSON array, um objeto por lancamento:
 LEMBRE: se nao identificar a empresa, copie o texto original EXATAMENTE. NUNCA use termos genericos.`;
 
     try {
-      const aiResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const aiResponse = await fetch(OPENROUTER_API_URL, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
+        headers: getOpenRouterHeaders(OPENROUTER_API_KEY),
         body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
+          model: getOpenRouterModel(),
           temperature: 0,
           messages: [
             { role: "system", content: systemPrompt },
@@ -131,7 +150,7 @@ LEMBRE: se nao identificar a empresa, copie o texto original EXATAMENTE. NUNCA u
       });
 
       if (!aiResponse.ok) {
-        console.error("Groq description enrichment error:", aiResponse.status, await aiResponse.text());
+        console.error("OpenRouter description enrichment error:", aiResponse.status, await aiResponse.text());
         continue;
       }
 
@@ -139,7 +158,7 @@ LEMBRE: se nao identificar a empresa, copie o texto original EXATAMENTE. NUNCA u
       const content = aiData.choices?.[0]?.message?.content || "";
       const descriptions = parseJsonArray(content);
       if (!descriptions) {
-        console.error("Could not parse Groq description response:", content);
+        console.error("Could not parse OpenRouter description response:", content);
         continue;
       }
 
@@ -163,7 +182,7 @@ LEMBRE: se nao identificar a empresa, copie o texto original EXATAMENTE. NUNCA u
         };
       }
     } catch (e) {
-      console.error("Groq description enrichment failed:", e);
+      console.error("OpenRouter description enrichment failed:", e);
     }
   }
 
@@ -313,6 +332,9 @@ function summarizeDescription(value: string, fallback = "") {
   return limitDescription(summary || tidyDescription(value) || fallback);
 }
 
+// Regex que cobre datas nos formatos: DD/MM/YYYY, DD-MM-YYYY, DDMMYYYY, YYYY-MM-DD, YYYY/MM/DD
+const DATE_PATTERN = /(?:\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?|\d{8}|\d{4}[-/]\d{1,2}[-/]\d{1,2})/;
+
 function isGenericImportedDescription(value: string) {
   const normalized = normalizeText(value);
   if (!normalized) return true;
@@ -325,10 +347,10 @@ function isGenericImportedDescription(value: string) {
     /^transacao\s+ofx$/,
     /^transacao\s+ofx\b/,
     /^transacao([\s\S]*)(ofx|bancaria|cartao|debito|credito)$/,
-    /^transacao(\s+|[\s*[-:])?(\\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{8})$/,
+    new RegExp(`^transacao[\\s*[\\-:]*]?${DATE_PATTERN.source}$`),
     /^lancamento$/,
     /^lancamento\s+importado$/,
-    /^lancamento(\s+|[\s*[-:])?(\\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{8})$/,
+    new RegExp(`^lancamento[\\s*[\\-:]*]?${DATE_PATTERN.source}$`),
     /^compra$/,
     /^compras?(\s+(cartao|credito|debito))?$/,
     /^pagamento$/,
@@ -514,8 +536,8 @@ function isGenericOfxDescription(value: string) {
     /^debito$/,
     /^credito$/,
     /^transacao\s+ofx$/,
-    /^transacao(\s+|\s*[-:])?(\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?|\d{8})$/,
-    /^lancamento(\s+|\s*[-:])?(\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?|\d{8})$/,
+    new RegExp(`^transacao[\\s*[\\-:]*]?${DATE_PATTERN.source}$`),
+    new RegExp(`^lancamento[\\s*[\\-:]*]?${DATE_PATTERN.source}$`),
   ].some(pattern => pattern.test(normalized));
 }
 
@@ -713,7 +735,7 @@ serve(async (req: Request) => {
       transactions = transactions.slice(0, 500);
     }
 
-    transactions = await enrichDescriptionsWithGroq(transactions);
+    transactions = await enrichDescriptionsWithOpenRouter(transactions);
 
     return new Response(JSON.stringify({ transactions, total: transactions.length }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

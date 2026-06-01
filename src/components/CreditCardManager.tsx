@@ -244,7 +244,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
       setImportStep('review');
       toast.success(`${parsed.length} lançamentos encontrados!${dupeCount > 0 ? ` ${dupeCount} duplicata(s).` : ''}`);
 
-      // Automatically enrich descriptions and categorize via Groq
+      // Automatically enrich descriptions and categorize via OpenRouter
       setImportEnriching(true);
       try {
         const { data: enrichData, error: enrichError } = await supabase.functions.invoke('enrich-descriptions', {
