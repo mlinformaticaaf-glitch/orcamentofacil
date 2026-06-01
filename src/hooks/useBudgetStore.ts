@@ -4,6 +4,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { format, subMonths, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
 import { toast } from 'sonner';
+import { calculateCarriedBalance } from '@/lib/carriedBalance';
 
 export function useBudgetStore() {
   const { user } = useAuth();
@@ -315,34 +316,8 @@ export function useBudgetStore() {
     });
   }, [expenses]);
 
-  // Optimized: pre-compute monthly income/expense sums for carried balance
   const getCarriedBalance = useCallback((month: Date) => {
-    const target = startOfMonth(month);
-
-    // Pre-group incomes and expenses by YYYY-MM for O(n) instead of O(n*120)
-    const incomeByMonth = new Map<string, number>();
-    for (const inc of incomes) {
-      if (inc.status !== 'received') continue;
-      const key = inc.date.substring(0, 7); // YYYY-MM
-      incomeByMonth.set(key, (incomeByMonth.get(key) || 0) + inc.amount);
-    }
-    const expenseByMonth = new Map<string, number>();
-    for (const exp of expenses) {
-      if (exp.status !== 'paid') continue;
-      const key = exp.date.substring(0, 7); // YYYY-MM
-      expenseByMonth.set(key, (expenseByMonth.get(key) || 0) + exp.amount);
-    }
-
-    let carried = 0;
-    for (let i = 1; i <= 120; i++) {
-      const m = subMonths(target, i);
-      const key = format(m, 'yyyy-MM');
-      const mIncome = incomeByMonth.get(key) || 0;
-      const mExpense = expenseByMonth.get(key) || 0;
-      if (mIncome === 0 && mExpense === 0) break;
-      carried += mIncome - mExpense;
-    }
-    return carried;
+    return calculateCarriedBalance(incomes, expenses, month);
   }, [incomes, expenses]);
 
   const getMonthTotals = useCallback((month?: Date) => {
