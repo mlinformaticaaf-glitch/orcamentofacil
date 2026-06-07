@@ -140,9 +140,15 @@ export type Database = {
           current_installment: number | null
           date: string
           description: string
+          duplicate_hash: string | null
           id: string
+          installment_group_id: string | null
           installments: number | null
+          invoice_month: string | null
           is_fixed: boolean
+          ofx_identifier: string | null
+          original_description: string | null
+          purchase_date: string | null
           status: string
           user_id: string
         }
@@ -155,9 +161,15 @@ export type Database = {
           current_installment?: number | null
           date?: string
           description: string
+          duplicate_hash?: string | null
           id?: string
+          installment_group_id?: string | null
           installments?: number | null
+          invoice_month?: string | null
           is_fixed?: boolean
+          ofx_identifier?: string | null
+          original_description?: string | null
+          purchase_date?: string | null
           status?: string
           user_id: string
         }
@@ -170,9 +182,15 @@ export type Database = {
           current_installment?: number | null
           date?: string
           description?: string
+          duplicate_hash?: string | null
           id?: string
+          installment_group_id?: string | null
           installments?: number | null
+          invoice_month?: string | null
           is_fixed?: boolean
+          ofx_identifier?: string | null
+          original_description?: string | null
+          purchase_date?: string | null
           status?: string
           user_id?: string
         }

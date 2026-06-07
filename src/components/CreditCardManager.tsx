@@ -12,52 +12,50 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Trash2, CreditCard as CreditCardIcon, ChevronLeft, ChevronRight, Upload, FileText, Loader2, ArrowLeft, ArrowRight, CheckCircle2, Copy, Pencil, Repeat, CalendarIcon, ShoppingCart, RotateCcw, Wand2 } from 'lucide-react';
-import { useState, useRef } from 'react';
-import { CreditCard as CreditCardType, Expense, Category, Account } from '@/types/budget';
-import { useSwipe } from '@/hooks/useSwipe';
-import { supabase } from '@/integrations/supabase/client';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Calendar } from '@/components/ui/calendar';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Trash2, CreditCard as CreditCardIcon, ChevronLeft, ChevronRight, Upload, FileText, Loader2, ArrowLeft, ArrowRight, CheckCircle2, Copy, Pencil, Repeat, CalendarIcon, ShoppingCart, RotateCcw, Wand2, ImagePlus, X } from 'lucide-react';
 import { PageFAB } from '@/components/PageFAB';
-import { format, parseISO, addMonths, subMonths, startOfMonth, endOfMonth, isWithinInterval } from 'date-fns';
+import { format, parseISO, addMonths, subMonths } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { calculateCreditCardMonthlyBalance, getCreditCardInvoicePeriod } from '@/lib/creditCardBalance';
 
 interface ParsedCardTransaction {
   date: string;
+  invoiceMonth: string;
   description: string;
-  originalDescription?: string;
+  originalDescription: string;
   amount: number;
   categoryId?: string;
   selected: boolean;
   isDuplicate: boolean;
   installments?: number;
   currentInstallment?: number;
+  ofxIdentifier?: string;
+  duplicateHash: string;
+  warnings: string[];
+}
+
+interface StatementTransaction {
+  date: string;
+  description: string;
+  originalDescription?: string;
+  amount: number;
+  type?: 'income' | 'expense';
 }
 
 function detectInstallments(description: string): { installments?: number; currentInstallment?: number; cleanDescription: string } {
   // Match patterns like "1/10", "01/12", "PARC 3/10", "PARCELA 3 DE 10", "P03/12".
   const patterns = [
-    /\b(?:parc(?:ela)?|prest(?:acao)?|p)\s*\.?\s*(\d{1,2})\s*(?:\/|de|-)\s*(\d{1,2})\b/i,
-    /\b(\d{1,2})\s*(?:\/|de|-)\s*(\d{1,2})\s*(?:parc(?:ela)?|prest(?:acao)?)\b/i,
-    /\b(\d{1,2})\s*\/\s*(\d{1,2})\b/i,
+    /\b(?:parc(?:ela)?|prest(?:acao)?|p)\s*\.?\s*(\d{1,3})\s*(?:\/|de|-)\s*(\d{1,3})\b/i,
+    /\b(\d{1,3})\s*(?:\/|de|-)\s*(\d{1,3})\s*(?:parc(?:ela)?|prest(?:acao)?)\b/i,
+    /\b(\d{1,3})\s*\/\s*(\d{1,3})\b/i,
   ];
   const match = patterns.map(pattern => description.match(pattern)).find(Boolean);
   if (match) {
     const current = parseInt(match[1], 10);
     const total = parseInt(match[2], 10);
-    if (total >= 2 && total <= 48 && current >= 1 && current <= total) {
+    if (total >= 2 && total <= 999 && current >= 1 && current <= total) {
       const clean = description
         .replace(match[0], '')
         .replace(/\s{2,}/g, ' ')
@@ -67,6 +65,80 @@ function detectInstallments(description: string): { installments?: number; curre
     }
   }
   return { cleanDescription: description };
+}
+
+function normalizeImportText(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getRenameRuleKey(description: string) {
+  return normalizeImportText(description)
+    .replace(/\b(?:parc(?:ela)?|prest(?:acao)?|p)\s*\.?\s*\d{1,3}\s*(?:\/|de|-)\s*\d{1,3}\b/gi, ' ')
+    .replace(/\b\d{1,3}\s*\/\s*\d{1,3}\b/g, ' ')
+    .replace(/\b\d{4,}\b/g, ' ')
+    .replace(/\b(?:br|brasil|sao paulo|sp|rio de janeiro|rj)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function toTitleCase(value: string) {
+  const keepUpper = new Set(['ifood', 'uber', 'amazon', 'netflix', 'spotify', 'pix']);
+  return value
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map(word => keepUpper.has(word) ? word.charAt(0).toUpperCase() + word.slice(1) : word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function summarizeCardDescription(originalDescription: string) {
+  const { cleanDescription } = detectInstallments(originalDescription);
+  const cleaned = cleanDescription
+    .replace(/\b(?:compra|compras|cartao|cartao credito|credito|debito|pagamento|pgto)\b/gi, ' ')
+    .replace(/\b(?:aut|auth|cod|codigo|terminal|nsu)\s*[:.#-]?\s*\d+\b/gi, ' ')
+    .replace(/\b\d{4,}\b/g, ' ')
+    .replace(/\b(?:br|brasil|sao paulo|sp|rio de janeiro|rj)\b/gi, ' ')
+    .replace(/[*/_.-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return toTitleCase(cleaned || originalDescription.trim());
+}
+
+function getInvoicePostingDate(invoiceMonth: string) {
+  return `${invoiceMonth}-01`;
+}
+
+function makeDuplicateHash(cardId: string, date: string, originalDescription: string, amount: number) {
+  return `${cardId}|${date}|${normalizeImportText(originalDescription)}|${amount.toFixed(2)}`;
+}
+
+function formatInstallmentLabel(current: number, total: number) {
+  const width = Math.max(2, String(total).length);
+  return `${String(current).padStart(width, '0')}/${String(total).padStart(width, '0')}`;
+}
+
+function getInstallmentDescription(description: string, current: number, total: number) {
+  return total > 1 ? `${description} ${formatInstallmentLabel(current, total)}` : description;
+}
+
+function makeInstallmentGroupId(cardId: string, purchaseDate: string, originalDescription: string, total: number, amount: number) {
+  return `installment|${cardId}|${purchaseDate}|${normalizeImportText(originalDescription)}|${total}|${amount.toFixed(2)}`;
+}
+
+function getInstallmentAmount(totalAmount: number, totalInstallments: number, installmentNumber: number) {
+  const baseCents = Math.floor((Math.abs(totalAmount) * 100) / totalInstallments);
+  const totalCents = Math.round(Math.abs(totalAmount) * 100);
+  const cents = installmentNumber === totalInstallments
+    ? totalCents - (baseCents * (totalInstallments - 1))
+    : baseCents;
+
+  return (totalAmount < 0 ? -cents : cents) / 100;
 }
 
 interface Props {
@@ -96,6 +168,66 @@ const CARD_COLORS = [
 ];
 
 const MAX_CARD_COVER_IMAGE_SIZE = 1024 * 1024;
+const CARD_COVER_WIDTH = 960;
+const CARD_COVER_HEIGHT = 605;
+
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Nao foi possivel carregar a imagem.'));
+    image.src = src;
+  });
+}
+
+async function resizeCardCoverImage(file: File) {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Nao foi possivel carregar a imagem.'));
+    };
+    reader.onerror = () => reject(new Error('Nao foi possivel carregar a imagem.'));
+    reader.readAsDataURL(file);
+  });
+
+  const image = await loadImage(dataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = CARD_COVER_WIDTH;
+  canvas.height = CARD_COVER_HEIGHT;
+
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Nao foi possivel ajustar a imagem.');
+
+  const sourceRatio = image.width / image.height;
+  const coverRatio = CARD_COVER_WIDTH / CARD_COVER_HEIGHT;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = image.width;
+  let sourceHeight = image.height;
+
+  if (sourceRatio > coverRatio) {
+    sourceWidth = image.height * coverRatio;
+    sourceX = (image.width - sourceWidth) / 2;
+  } else {
+    sourceHeight = image.width / coverRatio;
+    sourceY = (image.height - sourceHeight) / 2;
+  }
+
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    CARD_COVER_WIDTH,
+    CARD_COVER_HEIGHT,
+  );
+
+  return canvas.toDataURL('image/jpeg', 0.86);
+}
 
 export function CreditCardManager({ cards, expenses, categories, accounts = [], onAddCard, onUpdateCard, onDeleteCard, onAddExpense, onUpdateExpense, onDeleteExpense }: Props) {
   const [open, setOpen] = useState(false);
@@ -137,13 +269,22 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
   const [importTransactions, setImportTransactions] = useState<ParsedCardTransaction[]>([]);
   const [importStep, setImportStep] = useState<'select' | 'review' | 'done'>('select');
   const [importingData, setImportingData] = useState(false);
+  const [importReferenceMonth, setImportReferenceMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [importFileName, setImportFileName] = useState('');
+  const [importCloseConfirmOpen, setImportCloseConfirmOpen] = useState(false);
   const importFileRef = useRef<HTMLInputElement>(null);
 
   const expenseCategories = categories.filter(c => c.type === 'expense');
   const incomeCategories = categories.filter(c => c.type === 'income');
   const defaultCategoryId = expenseCategories[0]?.id || '';
   const refundCategoryId = categories.find(c => c.type === 'income' && c.name.trim().toLowerCase() === 'estornos')?.id || defaultCategoryId;
-  const normalize = (s: string) => s.toLowerCase().trim().replace(/\s+/g, ' ');
+  const getStoredRenameRules = () => {
+    try {
+      return JSON.parse(localStorage.getItem('credit-card-rename-rules') || '{}') as Record<string, string>;
+    } catch {
+      return {};
+    }
+  };
 
   // ---- Card CRUD handlers ----
   const handleOpenEdit = (card: CreditCardType) => {
@@ -172,7 +313,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     setOpen(true);
   };
 
-  const handleCardCoverSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCardCoverSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -188,15 +329,14 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setCardCoverImageUrl(reader.result);
-      }
-    };
-    reader.onerror = () => toast.error('Nao foi possivel carregar a imagem.');
-    reader.readAsDataURL(file);
-    event.target.value = '';
+    try {
+      const resizedImage = await resizeCardCoverImage(file);
+      setCardCoverImageUrl(resizedImage);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Nao foi possivel ajustar a imagem.');
+    } finally {
+      event.target.value = '';
+    }
   };
 
   const handleSave = () => {
@@ -226,8 +366,8 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     if (!file) return;
 
     const ext = file.name.split('.').pop()?.toLowerCase();
-    if (!['csv', 'ofx', 'qfx'].includes(ext || '')) {
-      toast.error('Formato não suportado. Use CSV, OFX ou QFX.');
+    if (!['ofx', 'qfx'].includes(ext || '')) {
+      toast.error('Formato nao suportado. Use OFX ou QFX.');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -235,10 +375,11 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
       return;
     }
 
+    setImportFileName(file.name);
     setImportLoading(true);
     try {
       const content = await file.text();
-      const fileFormat = ext === 'csv' ? 'csv' : 'ofx';
+      const fileFormat = 'ofx';
 
       const { data, error } = await supabase.functions.invoke('parse-statement', {
         body: { content, format: fileFormat },
@@ -249,26 +390,46 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
       const existingKeys = new Set(
         expenses
           .filter(ex => ex.creditCardId === importCardId)
-          .map(ex => `${ex.date}|${normalize(ex.description)}|${ex.amount}`)
+          .map(ex => ex.duplicateHash || makeDuplicateHash(
+            importCardId,
+            ex.purchaseDate || ex.date,
+            ex.originalDescription || ex.description,
+            ex.amount,
+          ))
       );
+      const renameRules = getStoredRenameRules();
 
       // Transactions from a card statement: negative = expense, positive = refund/credit
-      const parsed: ParsedCardTransaction[] = (data.transactions || []).map((t: any) => {
+      const parsed: ParsedCardTransaction[] = ((data.transactions || []) as StatementTransaction[]).map((t) => {
         const isRefund = t.type === 'income'; // positive amounts from OFX are credits/refunds
         const amt = isRefund ? -Math.abs(t.amount) : Math.abs(t.amount); // refunds stored as negative
-        const { installments, currentInstallment, cleanDescription } = detectInstallments(t.description);
-        const key = `${t.date}|${normalize(t.description)}|${amt}`;
-        const isDuplicate = existingKeys.has(key);
+        const originalDescription = t.originalDescription || t.description;
+        const { installments, currentInstallment, cleanDescription } = detectInstallments(originalDescription);
+        const ruleKey = getRenameRuleKey(originalDescription);
+        const summaryDescription = renameRules[ruleKey] || summarizeCardDescription(cleanDescription);
+        const duplicateHash = makeDuplicateHash(importCardId, t.date, originalDescription, amt);
+        const isDuplicate = existingKeys.has(duplicateHash);
+        const warnings: string[] = [];
+        if (installments && currentInstallment && currentInstallment > installments) {
+          warnings.push('Parcela atual maior que o total de parcelas.');
+        }
+        if (installments && currentInstallment && currentInstallment > 1) {
+          warnings.push('Parcela intermediaria: confira se a fatura importada e o mes de competencia estao corretos.');
+        }
         return {
           date: t.date,
-          description: cleanDescription,
-          originalDescription: t.originalDescription,
+          invoiceMonth: importReferenceMonth,
+          description: summaryDescription,
+          originalDescription,
           amount: amt,
           categoryId: isRefund ? refundCategoryId : defaultCategoryId,
           selected: !isDuplicate,
           isDuplicate,
           installments: isRefund ? undefined : installments,
           currentInstallment: isRefund ? undefined : currentInstallment,
+          ofxIdentifier: duplicateHash,
+          duplicateHash,
+          warnings,
         };
       });
 
@@ -315,7 +476,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
       } finally {
         setImportEnriching(false);
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Card import error:', err);
       toast.error('Erro ao processar arquivo.');
     } finally {
@@ -324,60 +485,74 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     }
   };
 
-
-
-  const handleImportConfirm = async () => {
+  const handleReviewedImportConfirm = async () => {
     const selected = importTransactions.filter(t => t.selected);
-    if (selected.length === 0) { toast.error('Selecione ao menos um lançamento.'); return; }
+    if (selected.length === 0) { toast.error('Selecione ao menos um lancamento.'); return; }
 
     setImportingData(true);
     try {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       let totalCreated = 0;
+      const renameRules = getStoredRenameRules();
+      const plannedDuplicateHashes = new Set(expenses.map(exp => exp.duplicateHash).filter(Boolean));
 
       for (const t of selected) {
         const isRefund = t.amount < 0;
-        const hasInstallments = !isRefund && t.installments && t.currentInstallment && t.installments >= 2;
+        const totalInstallments = isRefund ? 1 : Math.max(1, t.installments || 1);
+        const firstInstallment = isRefund ? 1 : Math.min(totalInstallments, Math.max(1, t.currentInstallment || 1));
+        const totalPurchaseAmount = totalInstallments > 1 ? Math.abs(t.amount) * totalInstallments : Math.abs(t.amount);
+        const signedTotalPurchaseAmount = t.amount < 0 ? -totalPurchaseAmount : totalPurchaseAmount;
+        const groupId = totalInstallments > 1
+          ? makeInstallmentGroupId(importCardId, t.date, t.originalDescription, totalInstallments, signedTotalPurchaseAmount)
+          : undefined;
+        const ruleKey = getRenameRuleKey(t.originalDescription);
 
-        if (hasInstallments) {
-          const remaining = t.installments! - t.currentInstallment! + 1;
-          for (let i = 0; i < remaining; i++) {
-            const installDate = addMonths(parseISO(t.date), i);
-            const installNum = t.currentInstallment! + i;
-            const invoiceDate = getInvoiceDate(installDate, importCardId);
-            const txDate = new Date(invoiceDate);
-            await onAddExpense({
-              categoryId: t.categoryId || defaultCategoryId,
-              description: t.description,
-              amount: t.amount,
-              date: invoiceDate,
-              isFixed: false,
-              creditCardId: importCardId,
-              installments: t.installments,
-              currentInstallment: installNum,
-              status: txDate > today ? 'pending' : 'paid',
-            });
-            totalCreated++;
-            await new Promise(r => setTimeout(r, 30));
-          }
-        } else {
-          const invoiceDate = isRefund ? t.date : getInvoiceDate(parseISO(t.date), importCardId);
+        if (ruleKey && t.description && t.description !== summarizeCardDescription(t.originalDescription)) {
+          renameRules[ruleKey] = t.description;
+        }
+
+        for (let installmentNumber = firstInstallment; installmentNumber <= totalInstallments; installmentNumber++) {
+          const offset = installmentNumber - firstInstallment;
+          const invoiceMonth = format(addMonths(parseISO(getInvoicePostingDate(t.invoiceMonth)), offset), 'yyyy-MM');
+          const invoiceDate = getInvoicePostingDate(invoiceMonth);
           const txDate = new Date(invoiceDate);
+          const amount = totalInstallments > 1
+            ? getInstallmentAmount(signedTotalPurchaseAmount, totalInstallments, installmentNumber)
+            : t.amount;
+          const duplicateHash = totalInstallments > 1
+            ? `${groupId}|${installmentNumber}`
+            : makeDuplicateHash(importCardId, t.date, t.originalDescription, amount);
+
+          if (plannedDuplicateHashes.has(duplicateHash)) {
+            continue;
+          }
+          plannedDuplicateHashes.add(duplicateHash);
+
           await onAddExpense({
             categoryId: t.categoryId || defaultCategoryId,
-            description: t.description,
-            amount: t.amount,
+            description: getInstallmentDescription(t.description, installmentNumber, totalInstallments),
+            originalDescription: t.originalDescription,
+            amount,
             date: invoiceDate,
+            purchaseDate: t.date,
+            invoiceMonth,
             isFixed: false,
             creditCardId: importCardId,
+            installments: totalInstallments,
+            currentInstallment: installmentNumber,
+            installmentGroupId: groupId,
             status: isRefund ? 'paid' : (txDate > today ? 'pending' : 'paid'),
+            ofxIdentifier: totalInstallments > 1 ? `${groupId}|${installmentNumber}` : t.ofxIdentifier || duplicateHash,
+            duplicateHash,
           });
           totalCreated++;
           await new Promise(r => setTimeout(r, 30));
         }
       }
-      toast.success(`${totalCreated} lançamentos importados!`);
+
+      localStorage.setItem('credit-card-rename-rules', JSON.stringify(renameRules));
+      toast.success(`${totalCreated} lancamentos importados!`);
       setImportStep('done');
     } catch {
       toast.error('Erro ao importar.');
@@ -386,9 +561,34 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     }
   };
 
+  const resetImportState = () => {
+    setImportStep('select');
+    setImportTransactions([]);
+    setImportCardId('');
+    setImportFileName('');
+    setImportLoading(false);
+    setImportEnriching(false);
+    setImportingData(false);
+    if (importFileRef.current) importFileRef.current.value = '';
+  };
+
+  const hasUnconfirmedImportData = importStep !== 'done' && importTransactions.length > 0;
+
   const handleImportClose = () => {
+    if (hasUnconfirmedImportData) {
+      setImportCloseConfirmOpen(true);
+      return;
+    }
+
     setImportOpen(false);
-    setTimeout(() => { setImportStep('select'); setImportTransactions([]); setImportCardId(''); }, 300);
+    setImportCloseConfirmOpen(false);
+    setTimeout(resetImportState, 150);
+  };
+
+  const confirmImportClose = () => {
+    setImportOpen(false);
+    setImportCloseConfirmOpen(false);
+    setTimeout(resetImportState, 150);
   };
 
   const handleOpenPurchase = (cardId: string, isRefund = false) => {
@@ -397,222 +597,188 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     setPurchaseDesc('');
     setPurchaseAmount('');
     setPurchaseDate(new Date());
-    setPurchaseCategoryId(isRefund ? refundCategoryId : (expenseCategories[0]?.id || ''));
+    setPurchaseCategoryId(isRefund ? refundCategoryId : defaultCategoryId);
     setPurchaseInstallments('1');
     setPurchaseIsRefund(isRefund);
     setPurchaseOpen(true);
   };
 
-  const handleOpenEditExpense = (exp: Expense) => {
-    setEditingExpense(exp);
-    setPurchaseCardId(exp.creditCardId || '');
-    setPurchaseDesc(exp.description);
-    setPurchaseAmount(String(Math.abs(exp.amount)));
-    setPurchaseDate(parseISO(exp.date));
-    setPurchaseCategoryId(exp.categoryId);
-    setPurchaseInstallments(String(exp.installments || 1));
-    setPurchaseIsRefund(exp.amount < 0);
+  const handleOpenEditExpense = (expense: Expense) => {
+    setEditingExpense(expense);
+    setPurchaseCardId(expense.creditCardId || '');
+    setPurchaseDesc(expense.description);
+    setPurchaseAmount(String(Math.abs(expense.amount)));
+    setPurchaseDate(parseISO(expense.purchaseDate || expense.date));
+    setPurchaseCategoryId(expense.categoryId);
+    setPurchaseInstallments(String(expense.installments || 1));
+    setPurchaseIsRefund(expense.amount < 0);
     setPurchaseOpen(true);
   };
 
-  // Return the actual transaction date — the invoice period logic in
-  // getInvoicePeriod / getCardExpensesForMonth already handles which
-  // invoice month a purchase falls into based on the card's closingDay.
   const getInvoiceDate = (txDate: Date, _cardId: string) => {
     return format(txDate, 'yyyy-MM-dd');
   };
 
+  const resetPurchaseForm = () => {
+    setPurchaseOpen(false);
+    setEditingExpense(null);
+    setPurchaseDesc('');
+    setPurchaseAmount('');
+    setPurchaseCategoryId('');
+    setPurchaseInstallments('1');
+    setPurchaseIsRefund(false);
+  };
+
   const handleSavePurchase = async () => {
-    if (!purchaseDesc || !purchaseAmount || (!purchaseIsRefund && !purchaseCategoryId)) return;
-    const rawAmount = Number(purchaseAmount);
-    const finalAmount = purchaseIsRefund ? -Math.abs(rawAmount) : Math.abs(rawAmount);
+    const amountValue = Number(purchaseAmount);
+    if (!purchaseDesc || !amountValue || (!purchaseIsRefund && !purchaseCategoryId)) return;
 
-    // Editing existing expense
+    const signedAmount = purchaseIsRefund ? -Math.abs(amountValue) : Math.abs(amountValue);
+
     if (editingExpense) {
-      const shouldUpdateFutureInstallments =
-        !purchaseIsRefund &&
-        editingExpense.installments &&
-        editingExpense.installments > 1 &&
-        editingExpense.currentInstallment &&
-        editingExpense.categoryId !== purchaseCategoryId;
-
-      await onUpdateExpense({
+      const invoiceDate = getInvoiceDate(purchaseDate, purchaseCardId);
+      onUpdateExpense({
         ...editingExpense,
+        categoryId: purchaseCategoryId || editingExpense.categoryId,
         description: purchaseDesc,
-        amount: finalAmount,
-        date: format(purchaseDate, 'yyyy-MM-dd'),
-        categoryId: purchaseIsRefund ? refundCategoryId : purchaseCategoryId,
+        amount: signedAmount,
+        date: invoiceDate,
+        purchaseDate: format(purchaseDate, 'yyyy-MM-dd'),
+        invoiceMonth: invoiceDate.substring(0, 7),
+        installments: purchaseIsRefund ? undefined : editingExpense.installments,
+        currentInstallment: purchaseIsRefund ? undefined : editingExpense.currentInstallment,
       });
-      if (shouldUpdateFutureInstallments) {
-        const futureInstallments = findRelatedInstallments(editingExpense).filter(e =>
-          (e.currentInstallment || 0) > (editingExpense.currentInstallment || 0)
-        );
-
-        for (const installment of futureInstallments) {
-          await onUpdateExpense({
-            ...installment,
-            categoryId: purchaseCategoryId,
-          });
-        }
-      }
-      toast.success('Lançamento atualizado!');
-      setPurchaseOpen(false);
-      setEditingExpense(null);
+      toast.success('Lancamento atualizado!');
+      resetPurchaseForm();
       return;
     }
 
-    if (purchaseIsRefund) {
+    const installments = Math.min(999, Math.max(1, Number(purchaseInstallments) || 1));
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (purchaseIsRefund || installments === 1) {
       const invoiceDate = getInvoiceDate(purchaseDate, purchaseCardId);
+      const duplicateHash = makeDuplicateHash(purchaseCardId, format(purchaseDate, 'yyyy-MM-dd'), purchaseDesc, signedAmount);
       await onAddExpense({
-        categoryId: refundCategoryId,
+        categoryId: purchaseCategoryId || defaultCategoryId,
         description: purchaseDesc,
-        amount: finalAmount,
+        originalDescription: purchaseDesc,
+        amount: signedAmount,
         date: invoiceDate,
+        purchaseDate: format(purchaseDate, 'yyyy-MM-dd'),
+        invoiceMonth: invoiceDate.substring(0, 7),
         isFixed: false,
         creditCardId: purchaseCardId,
-        status: 'paid',
+        installments: 1,
+        currentInstallment: 1,
+        status: purchaseIsRefund ? 'paid' : (new Date(invoiceDate) > today ? 'pending' : 'paid'),
+        duplicateHash,
       });
-      toast.success('Estorno registrado!');
-    } else {
-      const numInstallments = Math.max(1, Number(purchaseInstallments));
-      const installmentAmount = Math.round((rawAmount / numInstallments) * 100) / 100;
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      for (let i = 0; i < numInstallments; i++) {
-        const installDate = addMonths(purchaseDate, i);
-        const invoiceDate = getInvoiceDate(installDate, purchaseCardId);
-        await onAddExpense({
-          categoryId: purchaseCategoryId,
-          description: numInstallments > 1 ? `${purchaseDesc} (${i + 1}/${numInstallments})` : purchaseDesc,
-          amount: installmentAmount,
-          date: invoiceDate,
-          isFixed: false,
-          creditCardId: purchaseCardId,
-          installments: numInstallments > 1 ? numInstallments : undefined,
-          currentInstallment: numInstallments > 1 ? i + 1 : undefined,
-          status: new Date(invoiceDate) > today ? 'pending' : 'paid',
-        });
-      }
-      toast.success(numInstallments > 1
-        ? `Compra adicionada em ${numInstallments}x de ${formatCurrency(installmentAmount)}`
-        : 'Compra adicionada!');
+      toast.success(purchaseIsRefund ? 'Estorno registrado!' : 'Compra adicionada!');
+      resetPurchaseForm();
+      return;
     }
-    setPurchaseOpen(false);
+
+    const purchaseDateKey = format(purchaseDate, 'yyyy-MM-dd');
+    const groupId = makeInstallmentGroupId(purchaseCardId, purchaseDateKey, purchaseDesc, installments, amountValue);
+    for (let i = 0; i < installments; i++) {
+      const installmentNumber = i + 1;
+      const installmentDate = addMonths(purchaseDate, i);
+      const invoiceDate = getInvoiceDate(installmentDate, purchaseCardId);
+      const amount = getInstallmentAmount(amountValue, installments, installmentNumber);
+      const duplicateHash = `${groupId}|${installmentNumber}`;
+      await onAddExpense({
+        categoryId: purchaseCategoryId || defaultCategoryId,
+        description: getInstallmentDescription(purchaseDesc, installmentNumber, installments),
+        originalDescription: purchaseDesc,
+        amount,
+        date: invoiceDate,
+        purchaseDate: purchaseDateKey,
+        invoiceMonth: invoiceDate.substring(0, 7),
+        isFixed: false,
+        creditCardId: purchaseCardId,
+        installments,
+        currentInstallment: installmentNumber,
+        installmentGroupId: groupId,
+        status: new Date(invoiceDate) > today ? 'pending' : 'paid',
+        ofxIdentifier: duplicateHash,
+        duplicateHash,
+      });
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+
+    toast.success(`Compra adicionada em ${installments} parcelas!`);
+    resetPurchaseForm();
   };
 
-  const getBaseDescription = (desc: string) => desc.replace(/\s*\(\d+\/\d+\)\s*$/, '').trim();
-
-  const findRelatedInstallments = (exp: Expense) => {
-    if (!exp.installments || !exp.creditCardId) return [];
-    const base = getBaseDescription(exp.description);
-    return expenses.filter(e =>
-      e.id !== exp.id &&
-      e.creditCardId === exp.creditCardId &&
-      e.installments === exp.installments &&
-      e.amount === exp.amount &&
-      getBaseDescription(e.description) === base
-    );
-  };
-
-  const handleDeleteExpense = (exp: Expense) => {
-    if (exp.installments && exp.installments > 1) {
-      setDeleteTarget(exp);
+  const handleDeleteExpense = (expense: Expense) => {
+    if (expense.installments && expense.installments > 1) {
+      setDeleteTarget(expense);
       setDeleteConfirmOpen(true);
-    } else {
-      onDeleteExpense(exp.id);
+      return;
     }
+
+    onDeleteExpense(expense.id);
+    toast.success('Lancamento excluido!');
   };
 
   const handleDeleteConfirm = (deleteAll: boolean) => {
     if (!deleteTarget) return;
-    if (deleteAll) {
-      const related = findRelatedInstallments(deleteTarget);
-      onDeleteExpense(deleteTarget.id);
-      related.forEach(e => onDeleteExpense(e.id));
-      toast.success(`${related.length + 1} parcelas excluídas`);
+
+    if (deleteAll && deleteTarget.installmentGroupId) {
+      expenses
+        .filter(expense => expense.installmentGroupId === deleteTarget.installmentGroupId)
+        .forEach(expense => onDeleteExpense(expense.id));
+      toast.success('Parcelas excluidas!');
+    } else if (deleteAll && deleteTarget.creditCardId && deleteTarget.installments) {
+      expenses
+        .filter(expense =>
+          expense.creditCardId === deleteTarget.creditCardId &&
+          expense.description === deleteTarget.description &&
+          expense.installments === deleteTarget.installments
+        )
+        .forEach(expense => onDeleteExpense(expense.id));
+      toast.success('Parcelas excluidas!');
     } else {
       onDeleteExpense(deleteTarget.id);
-      toast.success('Parcela excluída');
+      toast.success('Parcela excluida!');
     }
+
     setDeleteConfirmOpen(false);
     setDeleteTarget(null);
   };
 
-  // ---- Computed ----
-  // Invoice period: from closingDay+1 of previous month to closingDay of current month
   const getInvoicePeriod = (cardId: string, month: Date) => {
     const card = cards.find(c => c.id === cardId);
-    const closing = card ? card.closingDay : 31;
-    const prevMonth = subMonths(month, 1);
-    // Start: day after closing of previous month
-    const start = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), closing + 1);
-    // End: closing day of current month
-    const end = new Date(month.getFullYear(), month.getMonth(), closing, 23, 59, 59, 999);
-    return { start, end };
+    return getCreditCardInvoicePeriod({ closingDay: card ? card.closingDay : 31 }, month);
+  };
+
+  const getCardBalanceSummary = (cardId: string, month: Date) => {
+    const card = cards.find(c => c.id === cardId);
+    if (!card) {
+      return {
+        openingBalance: 0,
+        monthlyActivity: 0,
+        closingBalance: 0,
+        expenses: [],
+        period: getCreditCardInvoicePeriod({ closingDay: 31 }, month),
+      };
+    }
+
+    return calculateCreditCardMonthlyBalance(card, expenses, month);
   };
 
   const getCardExpensesForMonth = (cardId: string, month: Date) => {
-    const { start, end } = getInvoicePeriod(cardId, month);
-    return expenses
-      .filter(e => {
-        if (e.creditCardId !== cardId) return false;
-        const d = parseISO(e.date);
-        return d >= start && d <= end;
-      })
-      .sort((a, b) => a.date.localeCompare(b.date));
+    return getCardBalanceSummary(cardId, month).expenses;
   };
 
   const getCardSpentForMonth = (cardId: string, month: Date) => {
-    return getCardExpensesForMonth(cardId, month).reduce((sum, e) => sum + e.amount, 0);
-  };
-
-  // Calculate carried-over balance from previous months
-  // Accumulates unpaid debt AND net credits from previous invoices
-  const getCarriedBalance = (cardId: string, month: Date) => {
-    const card = cards.find(c => c.id === cardId);
-    if (!card) return 0;
-
-    const today = new Date();
-    const prevMonth = subMonths(month, 1);
-    const prevDueDate = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), Math.min(card.dueDay, 28));
-
-    // Only carry over if past the previous month's due date
-    if (today < prevDueDate) return 0;
-
-    let carried = 0;
-
-    // Walk backwards through previous invoice periods accumulating balances
-    for (let i = 0; i < 24; i++) {
-      const m = subMonths(month, i + 1);
-      const periodExpenses = getCardExpensesForMonth(cardId, m);
-      if (periodExpenses.length === 0 && i > 0) break;
-
-      const periodNet = periodExpenses.reduce((sum, e) => sum + e.amount, 0);
-      const allPaid = periodExpenses.length > 0 && periodExpenses.every(e => e.status === 'paid');
-
-      if (allPaid) {
-        // Invoice was settled. If net was negative (credit), the credit carries forward.
-        // If net was positive, the user paid it — nothing carries.
-        if (periodNet < 0) {
-          carried += periodNet; // negative = credit carries forward
-        }
-      } else {
-        // Invoice not fully settled — unpaid items carry forward
-        const unpaidTotal = periodExpenses
-          .filter(e => e.status !== 'paid')
-          .reduce((sum, e) => sum + e.amount, 0);
-        carried += unpaidTotal;
-      }
-    }
-
-    return carried; // positive = debt, negative = credit
+    return getCardBalanceSummary(cardId, month).monthlyActivity;
   };
 
   const getCardTotalForMonth = (cardId: string, month: Date) => {
-    const currentMonthTotal = getCardSpentForMonth(cardId, month);
-    const carried = getCarriedBalance(cardId, month);
-    return currentMonthTotal + carried;
+    return getCardBalanceSummary(cardId, month).closingBalance;
   };
 
   // Get all unpaid expenses for a card up to and including the given month's invoice period
@@ -681,7 +847,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                   <Upload className="w-4 h-4" /> Importar Fatura
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+              <DialogContent aria-describedby={undefined} className="max-w-2xl max-h-[88vh] overflow-hidden flex flex-col p-5 sm:p-6">
                 <DialogHeader>
                   <DialogTitle className="font-display flex items-center gap-2">
                     <FileText className="w-5 h-5" />
@@ -692,7 +858,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                 </DialogHeader>
 
                 {importStep === 'select' && (
-                  <div className="space-y-4 py-4">
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pt-2 pr-1">
                     <div>
                       <Label>Selecione o Cartão</Label>
                       <Select value={importCardId} onValueChange={setImportCardId}>
@@ -712,17 +878,37 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                       </Select>
                     </div>
 
+                    <div>
+                      <Label>Mes de competencia da fatura</Label>
+                      <Input
+                        type="month"
+                        value={importReferenceMonth}
+                        onChange={e => setImportReferenceMonth(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="rounded-xl border border-border bg-muted/50 px-4 py-3 space-y-1.5 opacity-100">
+                      <h4 className="font-medium text-sm">Dicas</h4>
+                      <ul className="text-xs text-muted-foreground space-y-0.5">
+                        <li>• Importe apenas arquivos .ofx.</li>
+                        <li>• Confira o mês de referência antes de confirmar.</li>
+                        <li>• Revise parcelas como 01/10, 02/10 etc.</li>
+                        <li>• Verifique possíveis lançamentos duplicados.</li>
+                        <li>• O saldo positivo ou negativo será transferido para o próximo mês.</li>
+                      </ul>
+                    </div>
+
                     {importCardId && (
-                      <div className="border-2 border-dashed border-border rounded-xl p-8 text-center space-y-3 hover:border-primary/50 transition-colors">
-                        <Upload className="w-10 h-10 mx-auto text-muted-foreground" />
+                      <div className="border-2 border-dashed border-border rounded-xl px-5 py-6 text-center space-y-3 hover:border-primary/50 transition-colors">
+                        <Upload className="w-8 h-8 mx-auto text-muted-foreground" />
                         <div>
                           <p className="font-medium">Selecione o arquivo da fatura</p>
-                          <p className="text-sm text-muted-foreground">Formatos aceitos: CSV, OFX, QFX</p>
+                          <p className="text-sm text-muted-foreground">Formatos aceitos: OFX, QFX</p>
                         </div>
                         <input
                           ref={importFileRef}
                           type="file"
-                          accept=".csv,.ofx,.qfx"
+                          accept=".ofx,.qfx"
                           onChange={handleImportFileSelect}
                           className="hidden"
                           id="card-statement-file"
@@ -738,16 +924,6 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                         </Button>
                       </div>
                     )}
-
-                    <Card className="p-4 space-y-2 bg-muted/50">
-                      <h4 className="font-medium text-sm">💡 Dicas</h4>
-                      <ul className="text-xs text-muted-foreground space-y-1">
-                        <li>• Exporte a fatura do seu cartão no formato CSV ou OFX</li>
-                        <li>• Parcelas (ex: 1/10) são detectadas e lançadas nos meses seguintes</li>
-                        <li>• Você pode editar descrição, valor, data e parcelas antes de importar</li>
-                        <li>• Duplicatas são detectadas automaticamente</li>
-                      </ul>
-                    </Card>
                   </div>
                 )}
 
@@ -760,6 +936,35 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                           <span>Identificando empresas e categorizando automaticamente...</span>
                         </div>
                       )}
+                      <Card className="p-3 space-y-1.5 bg-muted/50 border border-border opacity-100">
+                        <h4 className="font-medium text-sm">Dicas</h4>
+                        <ul className="text-xs text-muted-foreground space-y-1">
+                          <li>• Confira o mês de referência e revise possíveis duplicidades antes de confirmar.</li>
+                          <li>• Ajuste parcelas como 01/10, 02/10 e valores com até 3 dígitos.</li>
+                        </ul>
+                      </Card>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
+                        <div>
+                          <p className="text-muted-foreground">Arquivo</p>
+                          <p className="font-medium truncate">{importFileName || '-'}</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">Cartao</p>
+                          <p className="font-medium truncate">{cards.find(c => c.id === importCardId)?.name || '-'}</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">Competencia</p>
+                          <Input
+                            type="month"
+                            value={importReferenceMonth}
+                            onChange={e => {
+                              setImportReferenceMonth(e.target.value);
+                              setImportTransactions(prev => prev.map(t => ({ ...t, invoiceMonth: e.target.value })));
+                            }}
+                            className="h-7 text-xs"
+                          />
+                        </div>
+                      </div>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Button variant="ghost" size="sm" className="text-xs px-2 h-8" onClick={() => setImportTransactions(prev => prev.map(t => ({ ...t, selected: true })))}>Selecionar todos</Button>
                         <Button variant="ghost" size="sm" className="text-xs px-2 h-8" onClick={() => setImportTransactions(prev => prev.map(t => ({ ...t, selected: false })))}>Limpar</Button>
@@ -773,7 +978,9 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
 
                     <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0 pr-1">
                       {importTransactions.map((t, idx) => {
-                        const updateField = (field: string, value: any) => setImportTransactions(prev => prev.map((tr, i) => i === idx ? { ...tr, [field]: value } : tr));
+                        const updateField = <K extends keyof ParsedCardTransaction>(field: K, value: ParsedCardTransaction[K]) => {
+                          setImportTransactions(prev => prev.map((tr, i) => i === idx ? { ...tr, [field]: value } : tr));
+                        };
                         return (
                         <Card key={idx} className={cn("p-3 flex items-start gap-3 transition-all", !t.selected && "opacity-50", t.isDuplicate && "border-warning/50 bg-warning/5")}>
                           <Checkbox checked={t.selected} onCheckedChange={() => updateField('selected', !t.selected)} className="mt-1" />
@@ -783,6 +990,14 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                                 <Copy className="w-3 h-3" /> Duplicata
                               </span>
                             )}
+                            {t.warnings.map((warning) => (
+                              <span key={warning} className="inline-flex items-center gap-1 text-[10px] font-medium text-warning bg-warning/10 px-1.5 py-0.5 rounded-full">
+                                {warning}
+                              </span>
+                            ))}
+                            <p className="text-[10px] text-muted-foreground break-words">
+                              Original: {t.originalDescription}
+                            </p>
                             <div className="flex items-center gap-2">
                               <Input
                                 value={t.description}
@@ -804,9 +1019,15 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                                 onChange={e => updateField('date', e.target.value)}
                                 className="h-7 text-xs w-[140px]"
                               />
+                              <Input
+                                type="month"
+                                value={t.invoiceMonth}
+                                onChange={e => updateField('invoiceMonth', e.target.value)}
+                                className="h-7 text-xs w-[130px]"
+                              />
                               {t.installments && t.currentInstallment && (
                                 <span className="inline-flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">
-                                  <Repeat className="w-3 h-3" /> {t.currentInstallment}/{t.installments} — gera {t.installments - t.currentInstallment + 1} parcelas
+                                  <Repeat className="w-3 h-3" /> Parcela {t.currentInstallment}/{t.installments}
                                 </span>
                               )}
                               {!t.installments && (
@@ -827,22 +1048,23 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                                   <Input
                                     type="number"
                                     value={t.currentInstallment || 1}
-                                    onChange={e => updateField('currentInstallment', Math.max(1, parseInt(e.target.value) || 1))}
-                                    className="h-6 text-xs w-12 text-center"
+                                    onChange={e => updateField('currentInstallment', Math.min(999, Math.max(1, parseInt(e.target.value) || 1)))}
+                                    className="h-8 text-xs min-w-[80px] w-20 text-center"
                                     min={1}
-                                    max={t.installments}
+                                    max={999}
                                   />
                                   <span className="text-xs text-muted-foreground">/</span>
                                   <Input
                                     type="number"
                                     value={t.installments}
                                     onChange={e => {
-                                      const v = Math.max(2, parseInt(e.target.value) || 2);
+                                      const v = Math.min(999, Math.max(2, parseInt(e.target.value) || 2));
                                       updateField('installments', v);
                                       if ((t.currentInstallment || 1) > v) updateField('currentInstallment', v);
                                     }}
-                                    className="h-6 text-xs w-12 text-center"
+                                    className="h-8 text-xs min-w-[80px] w-20 text-center"
                                     min={2}
+                                    max={999}
                                   />
                                   <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground" onClick={() => { updateField('installments', undefined); updateField('currentInstallment', undefined); }}>
                                     <Trash2 className="w-3 h-3" />
@@ -870,7 +1092,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                       <Button variant="outline" onClick={() => { setImportStep('select'); setImportTransactions([]); }} className="gap-2">
                         <ArrowLeft className="w-4 h-4" /> Voltar
                       </Button>
-                      <Button onClick={handleImportConfirm} disabled={importingData || importEnriching || importSelectedCount === 0} className="flex-1 gap-2">
+                      <Button onClick={handleReviewedImportConfirm} disabled={importingData || importEnriching || importSelectedCount === 0} className="flex-1 gap-2">
                         {importingData ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
                         {importingData ? 'Importando...' : importEnriching ? 'Aguarde a IA...' : `Importar ${importSelectedCount} lançamentos`}
                       </Button>
@@ -892,8 +1114,28 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
             </Dialog>
           )}
 
+          <AlertDialog open={importCloseConfirmOpen} onOpenChange={setImportCloseConfirmOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Sair da importação?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Deseja sair da importação? Os dados não confirmados serão perdidos.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={confirmImportClose}
+                >
+                  Sair e descartar
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
           <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setEditing(null); }}>
-            <DialogContent>
+            <DialogContent aria-describedby={undefined}>
               <DialogHeader>
                 <DialogTitle className="font-display">{editing ? 'Editar' : 'Novo'} Cartão</DialogTitle>
               </DialogHeader>
@@ -937,7 +1179,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
                   <Label>Capa do cartao</Label>
                   <div className="mt-2 space-y-2">
                     {cardCoverImageUrl && (
-                      <div className="relative h-28 overflow-hidden rounded-md border border-border">
+                      <div className="relative aspect-[1.586/1] overflow-hidden rounded-md border border-border">
                         <img src={cardCoverImageUrl} alt="Capa do cartao" className="h-full w-full object-cover" />
                         <Button
                           type="button"
@@ -1013,9 +1255,10 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {cards.map(card => {
-          const currentSpent = getCardSpentForMonth(card.id, selectedMonth);
-          const carried = getCarriedBalance(card.id, selectedMonth);
-          const totalInvoice = currentSpent + carried;
+          const balanceSummary = getCardBalanceSummary(card.id, selectedMonth);
+          const currentSpent = balanceSummary.monthlyActivity;
+          const carried = balanceSummary.openingBalance;
+          const totalInvoice = balanceSummary.closingBalance;
           // Total unpaid across ALL months for limit usage
           const totalUnpaid = expenses
             .filter(e => e.creditCardId === card.id && e.status !== 'paid')
@@ -1028,7 +1271,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
             <Card key={card.id} className="glass-card overflow-hidden cursor-pointer transition-colors" onClick={() => handleOpenEdit(card)}>
               {/* Card visual */}
               <div
-                className="p-5 text-white relative overflow-hidden"
+                className="relative aspect-[1.586/1] overflow-hidden p-5 text-white"
                 style={{ background: `linear-gradient(135deg, ${card.color}, ${card.color}dd)` }}
               >
                 {card.coverImageUrl ? (
@@ -1092,6 +1335,20 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
 
                 {/* Invoice total */}
                 <div className="border-t pt-3">
+                  <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+                    <div>
+                      <p className="text-muted-foreground">Saldo inicial</p>
+                      <p className={cn("font-semibold", carried < 0 ? "text-success" : carried > 0 ? "text-destructive" : "text-muted-foreground")}>
+                        {formatCurrency(carried)}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-muted-foreground">Lançamentos</p>
+                      <p className={cn("font-semibold", currentSpent < 0 ? "text-success" : currentSpent > 0 ? "text-destructive" : "text-muted-foreground")}>
+                        {formatCurrency(currentSpent)}
+                      </p>
+                    </div>
+                  </div>
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs text-muted-foreground font-medium">Fatura do mês</p>
                     <span className={cn("text-lg font-bold font-display", totalInvoice < 0 ? "text-success" : totalInvoice > 0 ? "text-destructive" : "text-muted-foreground")}>
@@ -1240,7 +1497,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
 
       {/* Purchase Dialog */}
       <Dialog open={purchaseOpen} onOpenChange={setPurchaseOpen}>
-        <DialogContent>
+        <DialogContent aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle className="font-display flex items-center gap-2">
               {purchaseIsRefund ? <RotateCcw className="w-5 h-5 text-success" /> : <ShoppingCart className="w-5 h-5" />}
@@ -1284,7 +1541,7 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
             {!editingExpense && !purchaseIsRefund && (
               <div>
                 <Label>Parcelas</Label>
-                <Input type="number" value={purchaseInstallments} onChange={e => setPurchaseInstallments(e.target.value)} min={1} max={48} />
+                <Input type="number" value={purchaseInstallments} onChange={e => setPurchaseInstallments(e.target.value)} min={1} max={999} />
                 {Number(purchaseInstallments) > 1 && purchaseAmount && (
                   <p className="text-xs text-muted-foreground mt-1">
                     {purchaseInstallments}x de {formatCurrency(Math.round((Number(purchaseAmount) / Number(purchaseInstallments)) * 100) / 100)}
@@ -1369,3 +1626,6 @@ export function CreditCardManager({ cards, expenses, categories, accounts = [], 
     </div>
   );
 }
+
+
+

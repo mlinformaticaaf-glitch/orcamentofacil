@@ -18,12 +18,18 @@ export interface Expense {
   description: string;
   amount: number;
   date: string; // ISO string
+  purchaseDate?: string;
   isFixed: boolean;
   creditCardId?: string;
   installments?: number;
   currentInstallment?: number;
+  installmentGroupId?: string;
   status: ExpenseStatus;
   accountId?: string;
+  originalDescription?: string;
+  invoiceMonth?: string;
+  ofxIdentifier?: string;
+  duplicateHash?: string;
 }
 
 export interface Income {

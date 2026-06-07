@@ -6,6 +6,38 @@ import { format, subMonths, startOfMonth, endOfMonth, isWithinInterval, parseISO
 import { toast } from 'sonner';
 import { calculateCarriedBalance } from '@/lib/carriedBalance';
 
+let expenseMetadataSupported: boolean | null = null;
+
+function isMissingColumnError(error: unknown) {
+  const message = typeof error === 'object' && error && 'message' in error
+    ? String((error as { message?: unknown }).message)
+    : String(error || '');
+
+  return /schema cache|column|purchase_date|installment_group_id|original_description|invoice_month|ofx_identifier|duplicate_hash/i.test(message);
+}
+
+function mapExpenseRow(row: any, fallback?: Partial<Expense>): Expense {
+  return {
+    id: row.id,
+    categoryId: row.category_id,
+    description: row.description,
+    amount: Number(row.amount),
+    date: row.date,
+    purchaseDate: row.purchase_date ?? fallback?.purchaseDate,
+    isFixed: row.is_fixed,
+    creditCardId: row.credit_card_id ?? undefined,
+    installments: row.installments ?? undefined,
+    currentInstallment: row.current_installment ?? undefined,
+    installmentGroupId: row.installment_group_id ?? fallback?.installmentGroupId,
+    status: (row.status as 'paid' | 'pending') || 'pending',
+    accountId: row.account_id ?? undefined,
+    originalDescription: row.original_description ?? fallback?.originalDescription,
+    invoiceMonth: row.invoice_month ?? fallback?.invoiceMonth,
+    ofxIdentifier: row.ofx_identifier ?? fallback?.ofxIdentifier,
+    duplicateHash: row.duplicate_hash ?? fallback?.duplicateHash,
+  };
+}
+
 export function useBudgetStore() {
   const { user } = useAuth();
   const [categories, setCategories] = useState<Category[]>([]);
@@ -37,13 +69,7 @@ export function useBudgetStore() {
       setCategories((catRes.data || []).map(c => ({
         id: c.id, name: c.name, icon: c.icon, monthlyGoal: Number(c.monthly_goal), color: c.color, type: (c.type as 'expense' | 'income') || 'expense',
       })));
-      setExpenses((expRes.data || []).map(e => ({
-        id: e.id, categoryId: e.category_id, description: e.description, amount: Number(e.amount),
-        date: e.date, isFixed: e.is_fixed, creditCardId: e.credit_card_id ?? undefined,
-        installments: e.installments ?? undefined, currentInstallment: e.current_installment ?? undefined,
-        status: (e.status as 'paid' | 'pending') || 'pending',
-        accountId: e.account_id ?? undefined,
-      })));
+      setExpenses((expRes.data || []).map(e => mapExpenseRow(e)));
       setIncomes((incRes.data || []).map(i => ({
         id: i.id, description: i.description, amount: Number(i.amount), date: i.date, isRecurring: i.is_recurring,
         status: (i.status as 'received' | 'pending') || 'pending',
@@ -100,32 +126,71 @@ export function useBudgetStore() {
     const amount = Number(exp.amount);
     if (isNaN(amount) || amount === 0) { toast.error('Valor inválido.'); return; }
 
-    const { data, error } = await supabase.from('expenses').insert({
+    const legacyPayload = {
       user_id: user.id, category_id: exp.categoryId, description: exp.description,
       amount, date: exp.date, is_fixed: exp.isFixed,
       credit_card_id: exp.creditCardId ?? null, installments: exp.installments ?? null,
       current_installment: exp.currentInstallment ?? null, status: exp.status || 'pending',
       account_id: exp.accountId ?? null,
-    }).select().single();
-    if (error) { toast.error('Erro ao salvar despesa.'); console.error(error); return; }
-    if (data) setExpenses(prev => [...prev, {
-      id: data.id, categoryId: data.category_id, description: data.description,
-      amount: Number(data.amount), date: data.date, isFixed: data.is_fixed,
-      creditCardId: data.credit_card_id ?? undefined, installments: data.installments ?? undefined,
-      currentInstallment: data.current_installment ?? undefined, status: (data.status as 'paid' | 'pending') || 'pending',
-      accountId: data.account_id ?? undefined,
-    }]);
+    };
+
+    const fullPayload = {
+      ...legacyPayload,
+      purchase_date: exp.purchaseDate ?? null,
+      installment_group_id: exp.installmentGroupId ?? null,
+      original_description: exp.originalDescription ?? null,
+      invoice_month: exp.invoiceMonth ?? null,
+      ofx_identifier: exp.ofxIdentifier ?? null,
+      duplicate_hash: exp.duplicateHash ?? null,
+    };
+
+    let { data, error } = expenseMetadataSupported === false
+      ? await supabase.from('expenses').insert(legacyPayload).select().single()
+      : await supabase.from('expenses').insert(fullPayload).select().single();
+
+    if (error && isMissingColumnError(error)) {
+      expenseMetadataSupported = false;
+      ({ data, error } = await supabase.from('expenses').insert(legacyPayload).select().single());
+    } else if (!error) {
+      expenseMetadataSupported = true;
+    }
+
+    if (error) { toast.error('Erro ao salvar despesa.'); console.error('Erro ao salvar despesa:', error); return; }
+    if (data) setExpenses(prev => [...prev, mapExpenseRow(data, exp)]);
   }, [user]);
 
   const updateExpense = useCallback(async (exp: Expense) => {
     if (!user) return;
-    const { error } = await supabase.from('expenses').update({
+
+    const legacyPayload = {
       category_id: exp.categoryId, description: exp.description, amount: exp.amount,
       date: exp.date, is_fixed: exp.isFixed, credit_card_id: exp.creditCardId ?? null,
       installments: exp.installments ?? null, current_installment: exp.currentInstallment ?? null,
       status: exp.status, account_id: exp.accountId ?? null,
-    }).eq('id', exp.id).eq('user_id', user.id);
-    if (error) { toast.error('Erro ao atualizar despesa.'); console.error(error); return; }
+    };
+
+    const fullPayload = {
+      ...legacyPayload,
+      purchase_date: exp.purchaseDate ?? null,
+      installment_group_id: exp.installmentGroupId ?? null,
+      original_description: exp.originalDescription ?? null,
+      invoice_month: exp.invoiceMonth ?? null,
+      ofx_identifier: exp.ofxIdentifier ?? null,
+      duplicate_hash: exp.duplicateHash ?? null,
+    };
+
+    let { error } = expenseMetadataSupported === false
+      ? await supabase.from('expenses').update(legacyPayload).eq('id', exp.id).eq('user_id', user.id)
+      : await supabase.from('expenses').update(fullPayload).eq('id', exp.id).eq('user_id', user.id);
+
+    if (error && isMissingColumnError(error)) {
+      expenseMetadataSupported = false;
+      ({ error } = await supabase.from('expenses').update(legacyPayload).eq('id', exp.id).eq('user_id', user.id));
+    } else if (!error) {
+      expenseMetadataSupported = true;
+    }
+
+    if (error) { toast.error('Erro ao atualizar despesa.'); console.error('Erro ao atualizar despesa:', error); return; }
     setExpenses(prev => prev.map(e => e.id === exp.id ? exp : e));
   }, [user]);
 
@@ -141,7 +206,7 @@ export function useBudgetStore() {
     if (!user) return;
     // Validate amount
     const amount = Number(inc.amount);
-    if (isNaN(amount) || amount === 0) { toast.error('Valor inválido.'); return; }
+    if (isNaN(amount) || amount === 0) { toast.error('Valor invÃ¡lido.'); return; }
 
     const { data, error } = await supabase.from('incomes').insert({
       user_id: user.id, description: inc.description, amount, date: inc.date, is_recurring: inc.isRecurring, status: inc.status || 'pending',
@@ -183,7 +248,7 @@ export function useBudgetStore() {
       credit_limit: card.limit, closing_day: card.closingDay, due_day: card.dueDay, color: card.color,
       account_id: card.accountId ?? null, cover_image_url: card.coverImageUrl ?? null,
     }).select().single();
-    if (error) { toast.error('Erro ao salvar cartão.'); console.error(error); return; }
+    if (error) { toast.error('Erro ao salvar cartÃ£o.'); console.error(error); return; }
     if (data) setCreditCards(prev => [...prev, {
       id: data.id, name: data.name, lastDigits: data.last_digits, limit: Number(data.credit_limit),
       closingDay: data.closing_day, dueDay: data.due_day, color: data.color,
@@ -199,14 +264,14 @@ export function useBudgetStore() {
       closing_day: card.closingDay, due_day: card.dueDay, color: card.color,
       account_id: card.accountId ?? null, cover_image_url: card.coverImageUrl ?? null,
     }).eq('id', card.id).eq('user_id', user.id);
-    if (error) { toast.error('Erro ao atualizar cartão.'); console.error(error); return; }
+    if (error) { toast.error('Erro ao atualizar cartÃ£o.'); console.error(error); return; }
     setCreditCards(prev => prev.map(c => c.id === card.id ? card : c));
   }, [user]);
 
   const deleteCreditCard = useCallback(async (id: string) => {
     if (!user) return;
     const { error } = await supabase.from('credit_cards').delete().eq('id', id).eq('user_id', user.id);
-    if (error) { toast.error('Erro ao excluir cartão.'); console.error(error); return; }
+    if (error) { toast.error('Erro ao excluir cartÃ£o.'); console.error(error); return; }
     setCreditCards(prev => prev.filter(c => c.id !== id));
   }, [user]);
 
@@ -348,3 +413,4 @@ export function useBudgetStore() {
     totalBudget, totalSpent, totalIncome,
   };
 }
+
